@@ -15,19 +15,30 @@ struct AlarmListView: View {
             ZStack {
                 Theme.nightSky.ignoresSafeArea()
 
-                ScrollView {
-                    VStack(spacing: 16) {
+                List {
+                    Group {
                         NextAlarmCard(now: now)
                         ForEach(store.alarms) { alarm in
                             AlarmRow(alarm: alarm) { editingAlarm = alarm }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        store.delete(alarm)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
                         }
                         if store.alarms.isEmpty {
                             emptyState
                         }
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 100)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .contentMargins(.bottom, 100, for: .scrollContent)
             }
             .navigationTitle("Daybreak")
             .toolbar {

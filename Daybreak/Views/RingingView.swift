@@ -174,9 +174,9 @@ struct MathMissionView: View {
     let onComplete: () -> Void
 
     @State private var solved = 0
-    @State private var a = Int.random(in: 12...49)
-    @State private var b = Int.random(in: 12...49)
-    @State private var c = Int.random(in: 2...9)
+    @State private var a = Int.random(in: 1...49)
+    @State private var b = Int.random(in: 1...9)
+    @State private var c = Int.random(in: 1...9)
     @State private var answer = ""
     @State private var shake = false
     @FocusState private var focused: Bool
