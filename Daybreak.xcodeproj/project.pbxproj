@@ -10,9 +10,22 @@
 		040AB81C2FD93538007E96C6 /* Daybreak.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Daybreak.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		040AB8402FD937EB007E96C6 /* Exceptions for "Daybreak" folder in "Daybreak" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 040AB81B2FD93538007E96C6 /* Daybreak */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		040AB81E2FD93538007E96C6 /* Daybreak */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				040AB8402FD937EB007E96C6 /* Exceptions for "Daybreak" folder in "Daybreak" target */,
+			);
 			path = Daybreak;
 			sourceTree = "<group>";
 		};
@@ -256,6 +269,9 @@
 				DEVELOPMENT_TEAM = W826XVM526;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Daybreak/Info.plist;
+				INFOPLIST_KEY_NSAppleMusicUsageDescription = "Daybreak plays songs from your music library as your alarm.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Daybreak counts your steps for the wake-up mission.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -288,6 +304,9 @@
 				DEVELOPMENT_TEAM = W826XVM526;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Daybreak/Info.plist;
+				INFOPLIST_KEY_NSAppleMusicUsageDescription = "Daybreak plays songs from your music library as your alarm.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Daybreak counts your steps for the wake-up mission.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
