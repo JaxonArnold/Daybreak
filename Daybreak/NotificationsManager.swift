@@ -17,10 +17,17 @@ final class NotificationsManager: NSObject, UNUserNotificationCenterDelegate {
         completionHandler()
     }
 
-    // Show banners and play sound even if the app is foregrounded.
+    // Show banners and play sound even if the app is foregrounded —
+    // unless the ringing screen has already taken over.
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .list, .sound])
+        DispatchQueue.main.async { [weak self] in
+            if self?.store?.ringingAlarm != nil {
+                completionHandler([])
+            } else {
+                completionHandler([.banner, .list, .sound])
+            }
+        }
     }
 }

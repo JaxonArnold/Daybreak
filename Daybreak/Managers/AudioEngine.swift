@@ -14,30 +14,111 @@ final class AudioEngine {
 
     private let musicPlayer = MPMusicPlayerController.applicationMusicPlayer
     private var tonePlayer: AVAudioPlayer?
+    private var keepAlivePlayer: AVAudioPlayer?
     private var rampTimer: Timer?
     private var usingMusic = false
 
-    func startAlarm(song: SongChoice?, ramp: Bool) {
+    func startAlarm(song: SongChoice?, tone: AlarmTone, ramp: Bool) {
+        stopKeepAlive()
         configureSession()
         let startVolume: Float = ramp ? 0.15 : 1.0
         setSystemVolume(startVolume)
 
         if let song, let item = mediaItem(for: song.persistentID) {
-            usingMusic = true
-            musicPlayer.setQueue(with: MPMediaItemCollection(items: [item]))
-            musicPlayer.repeatMode = .one
-            musicPlayer.prepareToPlay()
-            musicPlayer.play()
+            if let assetURL = item.assetURL {
+                // DRM-free track: play it ourselves through AVAudioPlayer.
+                // No Now Playing session → no pause button on the lock screen.
+                usingMusic = false
+                tonePlayer = try? AVAudioPlayer(contentsOf: assetURL)
+                tonePlayer?.numberOfLoops = -1
+                tonePlayer?.volume = 1.0
+                if tonePlayer?.play() != true { playBundledTone(tone) }
+            } else {
+                // Apple Music (DRM) track: only MPMusicPlayerController can
+                // play it, and that puts a player on the lock screen. Disable
+                // its remote commands and re-start playback if it's paused.
+                usingMusic = true
+                setRemoteCommands(enabled: false)
+                musicPlayer.setQueue(with: MPMediaItemCollection(items: [item]))
+                musicPlayer.repeatMode = .one
+                musicPlayer.prepareToPlay()
+                musicPlayer.play()
+                startMusicWatchdog(fallbackTone: tone)
+            }
         } else {
             usingMusic = false
-            playBundledTone()
+            playBundledTone(tone)
         }
 
         if ramp { startRamp(from: startVolume) }
     }
 
+    /// While ringing with a DRM track, re-start playback whenever it stops —
+    /// the lock-screen pause button must not silence the alarm. This also
+    /// covers applicationMusicPlayer failing to start from the background:
+    /// if playback won't stick after a few attempts, blast the bundled tone
+    /// instead (AVAudioPlayer has no lock-screen controls at all).
+    private var musicWatchdog: Timer?
+
+    private func startMusicWatchdog(fallbackTone: AlarmTone) {
+        musicWatchdog?.invalidate()
+        var stalledTicks = 0
+        musicWatchdog = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] timer in
+            guard let self, self.usingMusic else { timer.invalidate(); return }
+            if self.musicPlayer.playbackState == .playing {
+                stalledTicks = 0
+            } else {
+                stalledTicks += 1
+                self.musicPlayer.play()
+                if stalledTicks >= 3 {
+                    timer.invalidate()
+                    self.usingMusic = false
+                    self.musicPlayer.stop()
+                    self.playBundledTone(fallbackTone)
+                }
+            }
+        }
+    }
+
+    /// The alarm must not be controllable from the lock screen.
+    private func setRemoteCommands(enabled: Bool) {
+        let center = MPRemoteCommandCenter.shared()
+        [center.pauseCommand, center.playCommand, center.stopCommand,
+         center.togglePlayPauseCommand, center.nextTrackCommand,
+         center.previousTrackCommand, center.changePlaybackPositionCommand]
+            .forEach { $0.isEnabled = enabled }
+    }
+
+    // MARK: - Background keep-alive
+    //
+    // iOS suspends backgrounded apps, and a suspended app can't start audio
+    // at alarm time. Looping a silent file (with the "audio" background
+    // mode) keeps the app running so AlarmStore's fire timer can take over
+    // with full-volume sound — even with the silent switch on.
+
+    /// Begin looping silence. Uses .mixWithOthers so it never interrupts
+    /// whatever the user is listening to.
+    func startKeepAlive() {
+        guard keepAlivePlayer?.isPlaying != true else { return }
+        guard let url = Bundle.main.url(forResource: "silence", withExtension: "wav") else { return }
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, options: [.mixWithOthers])
+        try? session.setActive(true)
+        keepAlivePlayer = try? AVAudioPlayer(contentsOf: url)
+        keepAlivePlayer?.numberOfLoops = -1
+        keepAlivePlayer?.volume = 0
+        keepAlivePlayer?.play()
+    }
+
+    func stopKeepAlive() {
+        keepAlivePlayer?.stop()
+        keepAlivePlayer = nil
+    }
+
     func stop() {
         rampTimer?.invalidate(); rampTimer = nil
+        musicWatchdog?.invalidate(); musicWatchdog = nil
+        setRemoteCommands(enabled: true)
         if usingMusic { musicPlayer.stop() }
         tonePlayer?.stop(); tonePlayer = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -62,10 +143,11 @@ final class AudioEngine {
         return query.items?.first
     }
 
-    private func playBundledTone() {
-        // Ship any loud loopable file named "alarm.caf" (or .m4a/.wav — adjust below).
-        guard let url = Bundle.main.url(forResource: "alarm", withExtension: "caf")
-                ?? Bundle.main.url(forResource: "alarm", withExtension: "m4a") else {
+    private func playBundledTone(_ tone: AlarmTone) {
+        let name = (tone.fileName as NSString).deletingPathExtension
+        let ext = (tone.fileName as NSString).pathExtension
+        guard let url = Bundle.main.url(forResource: name, withExtension: ext)
+                ?? Bundle.main.url(forResource: "alarm", withExtension: "caf") else {
             // Last resort: synthesize a beep via system sound loop.
             AudioServicesPlaySystemSound(1005)
             return

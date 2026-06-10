@@ -1,5 +1,6 @@
 import SwiftUI
 import MediaPlayer
+import CoreMotion
 import Combine
 
 struct AlarmEditorView: View {
@@ -12,6 +13,10 @@ struct AlarmEditorView: View {
     @State private var missionKind: MissionKind
     @State private var stepCount: Double
     @State private var mathCount: Double
+    @State private var motionStatus = CMPedometer.authorizationStatus()
+    // Must outlive the permission request — CoreMotion cancels the callback
+    // if the pedometer is deallocated while the dialog is up.
+    @State private var pedometer = CMPedometer()
 
     enum MissionKind: String, CaseIterable, Identifiable {
         case none = "None", steps = "Steps", math = "Math"
@@ -83,6 +88,15 @@ struct AlarmEditorView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .task {
+            // Alarms default to the steps mission; if motion access isn't
+            // granted, fall back so the selection isn't stuck on a locked tile.
+            if missionKind == .steps && !stepsUsable { missionKind = .math }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            // Pick up a grant made in Settings while this sheet was open.
+            motionStatus = CMPedometer.authorizationStatus()
+        }
     }
 
     // MARK: - Sections
@@ -147,6 +161,30 @@ struct AlarmEditorView: View {
                     .font(.footnote)
                     .foregroundStyle(Theme.dawnCoral)
             }
+
+            Divider().overlay(Theme.inkBorder)
+
+            HStack {
+                Label("Notification tone", systemImage: "bell.and.waves.left.and.right")
+                    .foregroundStyle(.white)
+                Spacer()
+                Menu {
+                    Picker("Notification tone", selection: $alarm.tone) {
+                        ForEach(AlarmTone.allCases) { tone in
+                            Text(tone.displayName).tag(tone)
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(alarm.tone.displayName)
+                        Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                    }
+                    .foregroundStyle(Theme.dawnAmber)
+                }
+            }
+            Text("Plays with each notification until you open the app.")
+                .font(.footnote)
+                .foregroundStyle(Theme.textDim)
         }
         .padding(20)
         .card()
@@ -162,9 +200,12 @@ struct AlarmEditorView: View {
             HStack(spacing: 10) {
                 ForEach(MissionKind.allCases) { kind in
                     let selected = missionKind == kind
-                    Button { missionKind = kind } label: {
+                    let locked = kind == .steps && !stepsUsable
+                    Button {
+                        if locked { requestMotionAccess() } else { missionKind = kind }
+                    } label: {
                         VStack(spacing: 6) {
-                            Image(systemName: kind.icon).font(.title3)
+                            Image(systemName: locked ? "lock.fill" : kind.icon).font(.title3)
                             Text(kind.rawValue).font(.footnote.weight(.medium))
                         }
                         .frame(maxWidth: .infinity)
@@ -174,7 +215,28 @@ struct AlarmEditorView: View {
                                 .fill(selected ? AnyShapeStyle(Theme.dawn) : AnyShapeStyle(Color.white.opacity(0.06)))
                         )
                         .foregroundStyle(selected ? Theme.ink : Theme.textDim)
+                        .opacity(locked ? 0.5 : 1)
                     }
+                }
+            }
+
+            if !stepsUsable {
+                if !CMPedometer.isStepCountingAvailable() {
+                    Text("This device can't count steps.")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.textFaint)
+                } else if motionStatus == .notDetermined {
+                    Text("Steps needs Motion & Fitness access — tap Steps to allow.")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.textDim)
+                } else {
+                    Button("Steps needs Motion & Fitness access — open Settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(Theme.dawnCoral)
                 }
             }
 
@@ -212,6 +274,32 @@ struct AlarmEditorView: View {
     }
 
     // MARK: - Helpers
+
+    private var stepsUsable: Bool {
+        CMPedometer.isStepCountingAvailable() && motionStatus == .authorized
+    }
+
+    private func requestMotionAccess() {
+        guard CMPedometer.isStepCountingAvailable() else { return }
+        switch CMPedometer.authorizationStatus() {
+        case .authorized:
+            motionStatus = .authorized
+            missionKind = .steps
+        case .notDetermined:
+            let now = Date()
+            pedometer.queryPedometerData(from: now.addingTimeInterval(-60), to: now) { _, _ in
+                DispatchQueue.main.async {
+                    motionStatus = CMPedometer.authorizationStatus()
+                    if motionStatus == .authorized { missionKind = .steps }
+                }
+            }
+        default:
+            // Denied earlier — iOS won't show the dialog again.
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                UIApplication.shared.open(url)
+            }
+        }
+    }
 
     private func sectionHeader(_ title: String, detail: String?) -> some View {
         HStack {

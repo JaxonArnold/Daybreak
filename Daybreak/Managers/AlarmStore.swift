@@ -16,8 +16,11 @@ final class AlarmStore: ObservableObject {
     /// for this window too.)
     static let ringWindow: TimeInterval = 10 * 60
     /// Notifications in the chain are spaced this far apart.
-    static let chainSpacing: TimeInterval = 30
-    private var chainLength: Int { Int(Self.ringWindow / Self.chainSpacing) }   // 20
+    /// NOTE: iOS caps an app at 64 pending notifications. At 10 s spacing a
+    /// 10-minute window wants 60, so we cap the chain so two enabled alarms
+    /// can coexist without iOS silently dropping the later one's chain.
+    static let chainSpacing: TimeInterval = 10
+    private var chainLength: Int { min(Int(Self.ringWindow / Self.chainSpacing), 30) }
 
     private let saveURL: URL = {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -26,14 +29,8 @@ final class AlarmStore: ObservableObject {
 
     init() {
         load()
-        Task { await requestPermission() }
-    }
-
-    // MARK: - Permissions
-
-    func requestPermission() async {
-        let center = UNUserNotificationCenter.current()
-        _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
+        // Notification permission is requested by OnboardingView — asking
+        // here too raced the onboarding sheet's own request at first launch.
     }
 
     // MARK: - CRUD
@@ -72,7 +69,7 @@ final class AlarmStore: ObservableObject {
     // MARK: - Scheduling (the Alarmy trick)
     //
     // iOS won't let an app ring like the system Clock from the background,
-    // so we schedule a *chain* of loud notifications every 30 s for 10 min.
+    // so we schedule a *chain* of loud notifications every 10 s.
     // They keep firing until the user opens the app — at which point the
     // app takes over with full-volume music + haptics + the mission.
 
@@ -87,10 +84,7 @@ final class AlarmStore: ObservableObject {
             content.body = i == 0 ? "Time to wake up! Open Daybreak to stop the alarm."
                                   : "Still ringing — open the app to complete your mission."
             content.interruptionLevel = .timeSensitive
-            // Bundle a loud ≤30 s sound named "alarm.caf" (see README); falls back to default.
-            content.sound = bundledSoundExists
-                ? UNNotificationSound(named: UNNotificationSoundName("alarm.caf"))
-                : .default
+            content.sound = notificationSound(for: alarm)
             content.userInfo = ["alarmID": alarm.id.uuidString]
 
             let interval = fire.timeIntervalSinceNow + Double(i) * Self.chainSpacing
@@ -114,14 +108,26 @@ final class AlarmStore: ObservableObject {
     }
 
     private func cancelNotifications(for alarm: Alarm) {
-        let ids = (0..<chainLength).map { "\(alarm.id.uuidString)-\($0)" }
+        var ids = (0..<chainLength).map { "\(alarm.id.uuidString)-\($0)" }
+        ids += (0..<chainLength).map { "\(alarm.id.uuidString)-ringing-\($0)" }
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: ids)
         center.removeDeliveredNotifications(withIdentifiers: ids)
     }
 
-    private var bundledSoundExists: Bool {
-        Bundle.main.url(forResource: "alarm", withExtension: "caf") != nil
+    /// The alarm's chosen tone if its file is bundled, else the classic
+    /// tone, else the system default sound.
+    private func notificationSound(for alarm: Alarm) -> UNNotificationSound {
+        for tone in [alarm.tone, .classic] where bundledSoundExists(tone.fileName) {
+            return UNNotificationSound(named: UNNotificationSoundName(tone.fileName))
+        }
+        return .default
+    }
+
+    private func bundledSoundExists(_ fileName: String) -> Bool {
+        let name = (fileName as NSString).deletingPathExtension
+        let ext = (fileName as NSString).pathExtension
+        return Bundle.main.url(forResource: name, withExtension: ext) != nil
     }
 
     // MARK: - Ringing takeover
@@ -144,8 +150,133 @@ final class AlarmStore: ObservableObject {
         snoozeCountThisRing = 0
         ringingAlarm = alarm
         cancelNotifications(for: alarm)
-        AudioEngine.shared.startAlarm(song: alarm.song, ramp: alarm.volumeRamp)
+        AudioEngine.shared.startAlarm(song: alarm.song, tone: alarm.tone, ramp: alarm.volumeRamp)
         if alarm.vibrate { HapticEngine.shared.start() }
+        if UIApplication.shared.applicationState != .active {
+            Task { await postRingingNotifications(for: alarm) }
+        }
+    }
+
+    /// Lock-screen breadcrumbs while the alarm audio plays in the background:
+    /// silent notifications (the song is already loud) that take the user
+    /// straight into the app — instead of a Now Playing card whose pause
+    /// button would let them silence the alarm without doing the mission.
+    private func postRingingNotifications(for alarm: Alarm) async {
+        let center = UNUserNotificationCenter.current()
+        for i in 0..<chainLength {
+            let content = UNMutableNotificationContent()
+            content.title = "⏰ \(alarm.label)"
+            content.body = "Ringing now — tap to open Daybreak and complete your mission."
+            content.interruptionLevel = .timeSensitive
+            content.sound = nil
+            content.userInfo = ["alarmID": alarm.id.uuidString]
+            let trigger = i == 0 ? nil : UNTimeIntervalNotificationTrigger(
+                timeInterval: Double(i) * Self.chainSpacing, repeats: false)
+            let request = UNNotificationRequest(
+                identifier: "\(alarm.id.uuidString)-ringing-\(i)",
+                content: content,
+                trigger: trigger
+            )
+            try? await center.add(request)
+        }
+    }
+
+    // MARK: - Background ringing (the real Alarmy trick)
+    //
+    // Notification sounds always respect the silent switch. To ring loud on
+    // a silenced phone, the app itself must be running at fire time: a
+    // silent audio loop (see AudioEngine.startKeepAlive) keeps us alive in
+    // the background, and this timer starts the real alarm — full-volume
+    // tone or library song — the moment it's due. The notification chain
+    // stays scheduled as a fallback for when iOS kills the app.
+
+    private var fireTimer: Timer?
+
+    /// Call when the app moves to the background.
+    func enterBackground() {
+        guard ringingAlarm == nil else {
+            // Already ringing out loud; force-quitting now would silence it.
+            startKillWarning()
+            return
+        }
+        armFireTimer()
+        if nextBackgroundFire() != nil {
+            AudioEngine.shared.startKeepAlive()
+            startKillWarning()
+        }
+    }
+
+    /// Call when the app becomes active again.
+    func enterForeground() {
+        fireTimer?.invalidate()
+        fireTimer = nil
+        stopKillWarning()
+        AudioEngine.shared.stopKeepAlive()
+    }
+
+    // MARK: - Force-quit warning (dead man's switch)
+    //
+    // If the user force-quits the app (or iOS kills it), the keep-alive
+    // loop dies and the alarm can't ring at full volume — and we get no
+    // chance to run code at that moment. So while armed in the background
+    // we keep a warning notification scheduled 90 s out and push it back
+    // every 45 s. App alive → it never fires. App killed → it fires.
+    // (applicationWillTerminate additionally fires it immediately when
+    // iOS gives us the courtesy call.)
+
+    private static let killWarningID = "daybreak-force-quit-warning"
+    private var killWarningTimer: Timer?
+
+    func scheduleKillWarning(after seconds: TimeInterval) {
+        let content = UNMutableNotificationContent()
+        content.title = "⚠️ Daybreak isn't running"
+        content.body = "Your alarm won't be able to ring at full volume. Reopen Daybreak to re-arm it."
+        content.sound = .default
+        content.interruptionLevel = .timeSensitive
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: seconds, repeats: false)
+        let request = UNNotificationRequest(identifier: Self.killWarningID, content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(request)   // same ID = replaces pending
+    }
+
+    private func startKillWarning() {
+        scheduleKillWarning(after: 90)
+        killWarningTimer?.invalidate()
+        let timer = Timer(timeInterval: 45, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in self.scheduleKillWarning(after: 90) }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        killWarningTimer = timer
+    }
+
+    private func stopKillWarning() {
+        killWarningTimer?.invalidate()
+        killWarningTimer = nil
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [Self.killWarningID])
+        center.removeDeliveredNotifications(withIdentifiers: [Self.killWarningID])
+    }
+
+    private func armFireTimer() {
+        fireTimer?.invalidate()
+        guard let next = nextBackgroundFire() else { return }
+        let timer = Timer(fire: next.date, interval: 0, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                guard self.ringingAlarm == nil else { return }
+                self.startRinging(next.alarm)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        fireTimer = timer
+    }
+
+    /// The next thing due to ring: a regular alarm or an in-flight snooze.
+    private func nextBackgroundFire() -> (alarm: Alarm, date: Date)? {
+        var candidates: [(Alarm, Date)] = []
+        if let next = nextAlarm { candidates.append(next) }
+        if let (alarm, fire) = snoozeOneShot, fire > .now { candidates.append((alarm, fire)) }
+        return candidates.min { $0.1 < $1.1 }.map { (alarm: $0.0, date: $0.1) }
     }
 
     func snooze() {

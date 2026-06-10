@@ -56,11 +56,13 @@ struct AlarmListView: View {
             .sheet(isPresented: $showingNew) {
                 AlarmEditorView(alarm: Alarm())
             }
-            .sheet(isPresented: .constant(!didCompleteOnboarding)) {
+            .sheet(isPresented: Binding(
+                get: { !didCompleteOnboarding },
+                set: { didCompleteOnboarding = !$0 }
+            )) {
                 OnboardingView()
                     .environmentObject(store)
                     .interactiveDismissDisabled()
-                    .onDisappear { didCompleteOnboarding = true }
             }
             .onReceive(tick) { now = $0 }
         }

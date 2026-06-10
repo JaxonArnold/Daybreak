@@ -1,8 +1,22 @@
 import SwiftUI
 import Combine
 
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    // A force-quit of an app that's running in the background (our silent
+    // keep-alive loop keeps us running) lands here — fire the warning right
+    // away instead of waiting for the dead man's switch.
+    func applicationWillTerminate(_ application: UIApplication) {
+        MainActor.assumeIsolated {
+            guard let store = NotificationsManager.shared.store,
+                  store.alarms.contains(where: { $0.isEnabled }) else { return }
+            store.scheduleKillWarning(after: 1)
+        }
+    }
+}
+
 @main
 struct DaybreakApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = AlarmStore()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -28,11 +42,19 @@ struct DaybreakApp: App {
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
+            switch phase {
+            case .active:
                 // The moment the user opens the app after the notification
                 // chain starts firing, take over with music + vibration.
+                store.enterForeground()
                 store.checkForRingingAlarm()
                 store.rescheduleAll()
+            case .background:
+                // Stay alive on a silent audio loop so the alarm can ring
+                // at full volume even if the phone is on silent.
+                store.enterBackground()
+            default:
+                break
             }
         }
     }

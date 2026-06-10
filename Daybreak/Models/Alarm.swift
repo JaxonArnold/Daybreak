@@ -30,6 +30,21 @@ struct SongChoice: Codable, Equatable, Hashable {
     var artist: String
 }
 
+/// Bundled notification tones. Each case maps to a .caf file in
+/// Daybreak/Sounds — keep files under 30 s or iOS plays the default sound.
+enum AlarmTone: String, Codable, CaseIterable, Identifiable {
+    case classic, chimes, pulse, sunrise
+
+    var id: String { rawValue }
+    var displayName: String { rawValue.capitalized }
+
+    /// File name inside the app bundle. The original tone keeps its
+    /// legacy name; variants follow "alarm-<tone>.caf".
+    var fileName: String {
+        self == .classic ? "alarm.caf" : "alarm-\(rawValue).caf"
+    }
+}
+
 enum Weekday: Int, Codable, CaseIterable, Identifiable, Comparable {
     case sunday = 1, monday, tuesday, wednesday, thursday, friday, saturday
     var id: Int { rawValue }
@@ -41,6 +56,11 @@ enum Weekday: Int, Codable, CaseIterable, Identifiable, Comparable {
 }
 
 struct Alarm: Identifiable, Codable, Equatable {
+    enum CodingKeys: String, CodingKey {
+        case id, hour, minute, label, isEnabled, repeatDays, song, tone,
+             mission, vibrate, volumeRamp, snoozeEnabled, snoozeMinutes, maxSnoozes
+    }
+
     var id = UUID()
     var hour: Int = 7
     var minute: Int = 0
@@ -48,6 +68,7 @@ struct Alarm: Identifiable, Codable, Equatable {
     var isEnabled: Bool = true
     var repeatDays: Set<Weekday> = []           // empty = one-time
     var song: SongChoice? = nil                 // nil = built-in alarm tone
+    var tone: AlarmTone = .classic              // notification chain sound
     var mission: Mission = .steps(count: 30)
     var vibrate: Bool = true
     var volumeRamp: Bool = true                 // fade in over ~30 s instead of instant blast
@@ -71,6 +92,27 @@ struct Alarm: Identifiable, Codable, Equatable {
         if repeatDays == [.saturday, .sunday] { return "Weekends" }
         return repeatDays.sorted().map(\.letter).joined(separator: " ")
     }
+
+    /// Custom decoding so alarms saved before `tone` existed still load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        hour = try c.decode(Int.self, forKey: .hour)
+        minute = try c.decode(Int.self, forKey: .minute)
+        label = try c.decode(String.self, forKey: .label)
+        isEnabled = try c.decode(Bool.self, forKey: .isEnabled)
+        repeatDays = try c.decode(Set<Weekday>.self, forKey: .repeatDays)
+        song = try c.decodeIfPresent(SongChoice.self, forKey: .song)
+        tone = try c.decodeIfPresent(AlarmTone.self, forKey: .tone) ?? .classic
+        mission = try c.decode(Mission.self, forKey: .mission)
+        vibrate = try c.decode(Bool.self, forKey: .vibrate)
+        volumeRamp = try c.decode(Bool.self, forKey: .volumeRamp)
+        snoozeEnabled = try c.decode(Bool.self, forKey: .snoozeEnabled)
+        snoozeMinutes = try c.decode(Int.self, forKey: .snoozeMinutes)
+        maxSnoozes = try c.decode(Int.self, forKey: .maxSnoozes)
+    }
+
+    init() {}
 
     /// The next date this alarm should fire, from `reference`.
     func nextFireDate(after reference: Date = .now) -> Date? {
