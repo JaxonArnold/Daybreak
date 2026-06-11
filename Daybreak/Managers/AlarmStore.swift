@@ -6,6 +6,10 @@ import Combine
 /// Owns the alarm list, persists it, schedules the notification chain, and decides when the in-app ringing screen should take over.
 @MainActor
 final class AlarmStore: ObservableObject {
+    /// Single shared instance — the SwiftUI scene and App Intents (Siri)
+    /// must mutate the same store.
+    static let shared = AlarmStore()
+
     @Published var alarms: [Alarm] = [] { didSet { persist() } }
     @Published var ringingAlarm: Alarm? = nil      // non-nil → full-screen RingingView
     @Published var snoozeCountThisRing = 0
@@ -21,7 +25,7 @@ final class AlarmStore: ObservableObject {
         return dir.appendingPathComponent("alarms.json")
     }()
 
-    init() {
+    private init() {
         load()
         loadDismissedRing()
     }

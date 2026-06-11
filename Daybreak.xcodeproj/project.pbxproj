@@ -133,14 +133,6 @@
 		};
 /* End PBXNativeTarget section */
 
-/* Begin PBXTargetDependency section */
-		0DB7E5700000000000000007 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 040AB81B2FD93538007E96C6 /* Daybreak */;
-			targetProxy = 0DB7E5700000000000000008 /* PBXContainerItemProxy */;
-		};
-/* End PBXTargetDependency section */
-
 /* Begin PBXProject section */
 		040AB8142FD93538007E96C6 /* Project object */ = {
 			isa = PBXProject;
@@ -211,6 +203,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		0DB7E5700000000000000007 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 040AB81B2FD93538007E96C6 /* Daybreak */;
+			targetProxy = 0DB7E5700000000000000008 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		040AB8252FD93539007E96C6 /* Debug */ = {

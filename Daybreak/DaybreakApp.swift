@@ -7,8 +7,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     // away instead of waiting for the dead man's switch.
     func applicationWillTerminate(_ application: UIApplication) {
         MainActor.assumeIsolated {
-            guard let store = NotificationsManager.shared.store,
-                  store.alarms.contains(where: { $0.isEnabled }) else { return }
+            let store = AlarmStore.shared
+            guard store.alarms.contains(where: { $0.isEnabled }) else { return }
             store.scheduleKillWarning(after: 1)
         }
     }
@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 @main
 struct DaybreakApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var store = AlarmStore()
+    @StateObject private var store = AlarmStore.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
