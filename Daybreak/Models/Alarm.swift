@@ -129,9 +129,9 @@ struct Alarm: Identifiable, Codable, Equatable {
     init() {}
 
     /// The next date this alarm should fire, from `reference`.
-    func nextFireDate(after reference: Date = .now) -> Date? {
+    /// `calendar` is injectable so tests can pin a timezone.
+    func nextFireDate(after reference: Date = .now, calendar cal: Calendar = .current) -> Date? {
         guard isEnabled else { return nil }
-        let cal = Calendar.current
         if repeatDays.isEmpty {
             var comps = cal.dateComponents([.year, .month, .day], from: reference)
             comps.hour = hour; comps.minute = minute; comps.second = 0
@@ -149,5 +149,20 @@ struct Alarm: Identifiable, Codable, Equatable {
             }
         }
         return best
+    }
+
+    /// The most recent scheduled occurrence at or before `now`, or nil if
+    /// the alarm wouldn't have fired that day (wrong weekday).
+    /// Ignores isEnabled — the caller decides whether a fire matters.
+    func lastFireDate(before now: Date, calendar cal: Calendar = .current) -> Date? {
+        var comps = cal.dateComponents([.year, .month, .day], from: now)
+        comps.hour = hour; comps.minute = minute; comps.second = 0
+        guard var candidate = cal.date(from: comps) else { return nil }
+        if candidate > now {
+            candidate = cal.date(byAdding: .day, value: -1, to: candidate)!
+        }
+        if repeatDays.isEmpty { return candidate }
+        let weekday = Weekday(rawValue: cal.component(.weekday, from: candidate))!
+        return repeatDays.contains(weekday) ? candidate : nil
     }
 }

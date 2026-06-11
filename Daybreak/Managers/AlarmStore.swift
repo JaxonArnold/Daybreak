@@ -340,16 +340,7 @@ final class AlarmStore: ObservableObject {
         if let (snoozed, fire) = snoozeOneShot, snoozed.id == alarm.id, fire <= now {
             return fire
         }
-        let cal = Calendar.current
-        var comps = cal.dateComponents([.year, .month, .day], from: now)
-        comps.hour = alarm.hour; comps.minute = alarm.minute; comps.second = 0
-        guard var candidate = cal.date(from: comps) else { return nil }
-        if candidate > now {
-            candidate = cal.date(byAdding: .day, value: -1, to: candidate)!
-        }
-        if alarm.repeatDays.isEmpty { return candidate }
-        let weekday = Weekday(rawValue: cal.component(.weekday, from: candidate))!
-        return alarm.repeatDays.contains(weekday) ? candidate : nil
+        return alarm.lastFireDate(before: now)
     }
 
     // MARK: - Persistence
