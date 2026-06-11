@@ -33,7 +33,7 @@ struct SongChoice: Codable, Equatable, Hashable {
 /// Bundled notification tones. Each case maps to a .caf file in
 /// Daybreak/Sounds — keep files under 30 s or iOS plays the default sound.
 enum AlarmTone: String, Codable, CaseIterable, Identifiable {
-    case classic, chimes, pulse, sunrise
+    case classic, flip, pulse, island, trap
 
     var id: String { rawValue }
     var displayName: String { rawValue.capitalized }
