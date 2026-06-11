@@ -97,6 +97,12 @@ struct AlarmEditorView: View {
             // Pick up a grant made in Settings while this sheet was open.
             motionStatus = CMPedometer.authorizationStatus()
         }
+        .onChange(of: alarm.tone) { _, tone in
+            AudioEngine.shared.preview(tone)
+        }
+        .sensoryFeedback(.selection, trigger: alarm.repeatDays)
+        .sensoryFeedback(.selection, trigger: missionKind)
+        .sensoryFeedback(.selection, trigger: alarm.tone)
     }
 
     // MARK: - Sections
@@ -129,6 +135,8 @@ struct AlarmEditorView: View {
                             )
                             .foregroundStyle(selected ? Theme.ink : Theme.textDim)
                     }
+                    .accessibilityLabel(day.name)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }
         }
@@ -170,7 +178,7 @@ struct AlarmEditorView: View {
                 Spacer()
                 Menu {
                     Picker("Notification tone", selection: $alarm.tone) {
-                        ForEach(AlarmTone.allCases) { tone in
+                        ForEach(AlarmTone.allCases.filter(\.isBundled)) { tone in
                             Text(tone.displayName).tag(tone)
                         }
                     }

@@ -48,6 +48,7 @@ struct AlarmListView: View {
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(Theme.dawnAmber)
                     }
+                    .accessibilityLabel("Add alarm")
                 }
             }
             .sheet(item: $editingAlarm) { alarm in
@@ -209,6 +210,7 @@ struct AlarmRow: View {
                 ))
                 .labelsHidden()
                 .tint(Theme.dawnCoral)
+                .sensoryFeedback(.selection, trigger: alarm.isEnabled)
             }
             .padding(20)
             .card()

@@ -147,6 +147,16 @@ struct OnboardingView: View {
 
     private func requestNotifications() async {
         let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        if settings.authorizationStatus == .denied {
+            // Denied earlier — iOS won't show the dialog again.
+            await MainActor.run {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            return
+        }
         do {
             let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
             await MainActor.run { notificationsGranted = granted }

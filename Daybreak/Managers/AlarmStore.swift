@@ -3,22 +3,16 @@ import UserNotifications
 import SwiftUI
 import Combine
 
-/// Owns the alarm list, persists it, schedules the notification chain,
-/// and decides when the in-app ringing screen should take over.
+/// Owns the alarm list, persists it, schedules the notification chain, and decides when the in-app ringing screen should take over.
 @MainActor
 final class AlarmStore: ObservableObject {
     @Published var alarms: [Alarm] = [] { didSet { persist() } }
     @Published var ringingAlarm: Alarm? = nil      // non-nil → full-screen RingingView
     @Published var snoozeCountThisRing = 0
 
-    /// How long after fire time the alarm is still considered "ringing"
-    /// if the user only just opened the app. (Notifications keep firing
-    /// for this window too.)
+    /// How long after fire time the alarm is still considered "ringing"  if the user only just opened the app. (Notifications keep firing for this window too.)
     static let ringWindow: TimeInterval = 10 * 60
     /// Notifications in the chain are spaced this far apart.
-    /// NOTE: iOS caps an app at 64 pending notifications. At 10 s spacing a
-    /// 10-minute window wants 60, so we cap the chain so two enabled alarms
-    /// can coexist without iOS silently dropping the later one's chain.
     static let chainSpacing: TimeInterval = 10
     private var chainLength: Int { min(Int(Self.ringWindow / Self.chainSpacing), 30) }
 
@@ -29,8 +23,7 @@ final class AlarmStore: ObservableObject {
 
     init() {
         load()
-        // Notification permission is requested by OnboardingView — asking
-        // here too raced the onboarding sheet's own request at first launch.
+        loadDismissedRing()
     }
 
     // MARK: - CRUD
@@ -42,19 +35,20 @@ final class AlarmStore: ObservableObject {
             alarms.append(alarm)
         }
         sortAlarms()
-        Task { await reschedule(alarm) }
+        queueReschedule(alarm)
     }
 
     func delete(_ alarm: Alarm) {
         alarms.removeAll { $0.id == alarm.id }
+        if snoozeOneShot?.0.id == alarm.id { snoozeOneShot = nil }
         cancelNotifications(for: alarm)
     }
 
     func toggle(_ alarm: Alarm, enabled: Bool) {
         guard let i = alarms.firstIndex(where: { $0.id == alarm.id }) else { return }
         alarms[i].isEnabled = enabled
-        let updated = alarms[i]
-        Task { await reschedule(updated) }
+        if !enabled, snoozeOneShot?.0.id == alarm.id { snoozeOneShot = nil }
+        queueReschedule(alarms[i])
     }
 
     private func sortAlarms() {
@@ -66,12 +60,7 @@ final class AlarmStore: ObservableObject {
               .min { $0.1 < $1.1 }
     }
 
-    // MARK: - Scheduling (the Alarmy trick)
-    //
-    // iOS won't let an app ring like the system Clock from the background,
-    // so we schedule a *chain* of loud notifications every 10 s.
-    // They keep firing until the user opens the app — at which point the
-    // app takes over with full-volume music + haptics + the mission.
+    // MARK: - Scheduling
 
     private func reschedule(_ alarm: Alarm) async {
         cancelNotifications(for: alarm)
@@ -79,6 +68,7 @@ final class AlarmStore: ObservableObject {
 
         let center = UNUserNotificationCenter.current()
         for i in 0..<chainLength {
+            guard !Task.isCancelled else { return }   // superseded by a newer reschedule
             let content = UNMutableNotificationContent()
             content.title = "⏰ \(alarm.label)"
             content.body = i == 0 ? "Time to wake up! Open Daybreak to stop the alarm."
@@ -99,12 +89,18 @@ final class AlarmStore: ObservableObject {
         }
     }
 
-    /// Reschedule everything (call on app launch / after an alarm finishes,
-    /// so repeating alarms line up their next occurrence).
+    /// Reschedule everything (call on app launch / after an alarm finishes, so repeating alarms line up their next occurrence).
     func rescheduleAll() {
-        Task {
-            for alarm in alarms { await reschedule(alarm) }
-        }
+        for alarm in alarms { queueReschedule(alarm) }
+    }
+
+    /// Reschedules are queued per alarm so a rapid edit/toggle can't
+    /// interleave two cancel-and-add passes for the same alarm.
+    private var rescheduleTasks: [UUID: Task<Void, Never>] = [:]
+
+    private func queueReschedule(_ alarm: Alarm) {
+        rescheduleTasks[alarm.id]?.cancel()
+        rescheduleTasks[alarm.id] = Task { await reschedule(alarm) }
     }
 
     private func cancelNotifications(for alarm: Alarm) {
@@ -115,8 +111,7 @@ final class AlarmStore: ObservableObject {
         center.removeDeliveredNotifications(withIdentifiers: ids)
     }
 
-    /// The alarm's chosen tone if its file is bundled, else the classic
-    /// tone, else the system default sound.
+    /// The alarm's chosen tone if its file is bundled, else the classic tone, else the system default sound.
     private func notificationSound(for alarm: Alarm) -> UNNotificationSound {
         for tone in [alarm.tone, .classic] where bundledSoundExists(tone.fileName) {
             return UNNotificationSound(named: UNNotificationSoundName(tone.fileName))
@@ -139,6 +134,9 @@ final class AlarmStore: ObservableObject {
         let now = Date.now
         for alarm in alarms where alarm.isEnabled {
             guard let last = lastFireDate(of: alarm, before: now) else { continue }
+            if let dismissed = dismissedRing, dismissed.id == alarm.id, dismissed.fire == last {
+                continue   // this ring was already dismissed
+            }
             if now.timeIntervalSince(last) < Self.ringWindow {
                 startRinging(alarm)
                 return
@@ -214,7 +212,7 @@ final class AlarmStore: ObservableObject {
         AudioEngine.shared.stopKeepAlive()
     }
 
-    // MARK: - Force-quit warning (dead man's switch)
+    // MARK: - Force-quit warning
     //
     // If the user force-quits the app (or iOS kills it), the keep-alive
     // loop dies and the alarm can't ring at full volume — and we get no
@@ -293,7 +291,7 @@ final class AlarmStore: ObservableObject {
         snoozed.hour = Calendar.current.component(.hour, from: fire)
         snoozed.minute = Calendar.current.component(.minute, from: fire)
         snoozeOneShot = (snoozed, fire)
-        Task { await reschedule(snoozed) }
+        queueReschedule(snoozed)
     }
 
     /// Tracks an in-flight snooze so checkForRingingAlarm can find it.
@@ -304,14 +302,38 @@ final class AlarmStore: ObservableObject {
         HapticEngine.shared.stop()
         if let alarm = ringingAlarm {
             cancelNotifications(for: alarm)
-            // One-time alarms switch off after they ring; repeating ones re-arm.
-            if alarm.repeatDays.isEmpty, let i = alarms.firstIndex(where: { $0.id == alarm.id }) {
+            // Remember this ring so reopening the app while its fire time is
+            // still inside the ring window doesn't start it all over again.
+            if let fire = lastFireDate(of: alarm, before: .now) {
+                dismissedRing = (alarm.id, fire)
+            }
+            // One-time alarms switch off after they ring; repeating ones
+            // re-arm. Check the *stored* alarm — a snoozed copy has its
+            // repeatDays stripped and must not switch off the original.
+            if let i = alarms.firstIndex(where: { $0.id == alarm.id }), alarms[i].repeatDays.isEmpty {
                 alarms[i].isEnabled = false
             }
         }
         snoozeOneShot = nil
         ringingAlarm = nil
         rescheduleAll()
+    }
+
+    /// The last ring the user dismissed (alarm id + fire time). Persisted so
+    /// a relaunch inside the ring window doesn't replay a dismissed alarm.
+    private var dismissedRing: (id: UUID, fire: Date)? {
+        didSet {
+            guard let dismissed = dismissedRing else { return }
+            UserDefaults.standard.set(dismissed.id.uuidString, forKey: "dismissedRingID")
+            UserDefaults.standard.set(dismissed.fire.timeIntervalSince1970, forKey: "dismissedRingFire")
+        }
+    }
+
+    private func loadDismissedRing() {
+        guard let raw = UserDefaults.standard.string(forKey: "dismissedRingID"),
+              let id = UUID(uuidString: raw) else { return }
+        let fire = UserDefaults.standard.double(forKey: "dismissedRingFire")
+        if fire > 0 { dismissedRing = (id, Date(timeIntervalSince1970: fire)) }
     }
 
     private func lastFireDate(of alarm: Alarm, before now: Date) -> Date? {

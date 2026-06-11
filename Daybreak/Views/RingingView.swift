@@ -102,6 +102,7 @@ struct PulsingGlow: View {
             .fill(Theme.dawnCoral.opacity(0.18))
             .frame(width: 380, height: 380)
             .blur(radius: 80)
+            .drawingGroup()   // rasterize once; animate the texture, not the blur
             .scaleEffect(pulse ? 1.15 : 0.9)
             .animation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true), value: pulse)
             .onAppear { pulse = true }

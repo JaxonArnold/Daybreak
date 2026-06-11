@@ -173,13 +173,39 @@ final class AudioEngine {
     /// Sets the hardware output volume via MPVolumeView's slider.
     /// This is the approach widely used by shipping alarm apps; there is
     /// no public direct API for output volume.
+    /// The view is created once — the ramp calls this every 1.5 s and
+    /// building a UIKit view hierarchy each tick is wasteful.
+    private lazy var volumeView = MPVolumeView(frame: .zero)
+
     private func setSystemVolume(_ value: Float) {
-        DispatchQueue.main.async {
-            let volumeView = MPVolumeView(frame: .zero)
+        DispatchQueue.main.async { [self] in
             guard let slider = volumeView.subviews.compactMap({ $0 as? UISlider }).first else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 slider.value = value
             }
+        }
+    }
+
+    // MARK: - Tone preview (editor)
+
+    private var previewPlayer: AVAudioPlayer?
+
+    /// Play a few seconds of a tone so the user can hear what they picked.
+    func preview(_ tone: AlarmTone) {
+        let name = (tone.fileName as NSString).deletingPathExtension
+        let ext = (tone.fileName as NSString).pathExtension
+        guard let url = Bundle.main.url(forResource: name, withExtension: ext) else { return }
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, options: [.duckOthers])
+        try? session.setActive(true)
+        previewPlayer = try? AVAudioPlayer(contentsOf: url)
+        previewPlayer?.play()
+        let player = previewPlayer
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, self.previewPlayer === player else { return }
+            player?.stop()
+            self.previewPlayer = nil
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
     }
 }

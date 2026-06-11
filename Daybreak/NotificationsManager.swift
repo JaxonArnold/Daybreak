@@ -23,6 +23,9 @@ final class NotificationsManager: NSObject, UNUserNotificationCenterDelegate {
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         DispatchQueue.main.async { [weak self] in
+            // An alarm notification arriving while the app is open means
+            // it's fire time — take over the screen, don't just banner.
+            self?.store?.checkForRingingAlarm()
             if self?.store?.ringingAlarm != nil {
                 completionHandler([])
             } else {

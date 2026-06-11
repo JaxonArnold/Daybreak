@@ -43,6 +43,14 @@ enum AlarmTone: String, Codable, CaseIterable, Identifiable {
     var fileName: String {
         self == .classic ? "alarm.caf" : "alarm-\(rawValue).caf"
     }
+
+    /// Whether the tone's file actually shipped in this build —
+    /// the picker shouldn't offer tones that would silently fall back.
+    var isBundled: Bool {
+        let name = (fileName as NSString).deletingPathExtension
+        let ext = (fileName as NSString).pathExtension
+        return Bundle.main.url(forResource: name, withExtension: ext) != nil
+    }
 }
 
 enum Weekday: Int, Codable, CaseIterable, Identifiable, Comparable {
@@ -76,12 +84,18 @@ struct Alarm: Identifiable, Codable, Equatable {
     var snoozeMinutes: Int = 5
     var maxSnoozes: Int = 3
 
-    var timeString: String {
+    // DateFormatter creation is expensive and timeString renders per row —
+    // build the formatter once.
+    private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = DateFormatter.dateFormat(fromTemplate: "j:mm", options: 0, locale: .current)
+        return f
+    }()
+
+    var timeString: String {
         var comps = DateComponents(); comps.hour = hour; comps.minute = minute
         let date = Calendar.current.date(from: comps) ?? .now
-        return f.string(from: date)
+        return Self.timeFormatter.string(from: date)
     }
 
     var repeatString: String {
