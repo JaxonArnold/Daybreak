@@ -46,6 +46,7 @@ final class AlarmStore: ObservableObject {
         alarms.removeAll { $0.id == alarm.id }
         if snoozeOneShot?.0.id == alarm.id { snoozeOneShot = nil }
         cancelNotifications(for: alarm)
+        FailsafeAlarm.cancel(alarm.id)
     }
 
     func toggle(_ alarm: Alarm, enabled: Bool) {
@@ -68,6 +69,8 @@ final class AlarmStore: ObservableObject {
 
     private func reschedule(_ alarm: Alarm) async {
         cancelNotifications(for: alarm)
+        // Keep the AlarmKit failsafe in lockstep with the notification chain.
+        await FailsafeAlarm.sync(alarm)
         guard alarm.isEnabled, let fire = alarm.nextFireDate() else { return }
 
         let center = UNUserNotificationCenter.current()
@@ -152,6 +155,9 @@ final class AlarmStore: ObservableObject {
         snoozeCountThisRing = 0
         ringingAlarm = alarm
         cancelNotifications(for: alarm)
+        // The app is ringing out loud — the system failsafe isn't needed
+        // for this occurrence. Dismissing re-arms it via rescheduleAll.
+        FailsafeAlarm.cancel(alarm.id)
         AudioEngine.shared.startAlarm(song: alarm.song, tone: alarm.tone, ramp: alarm.volumeRamp)
         if alarm.vibrate { HapticEngine.shared.start() }
         if UIApplication.shared.applicationState != .active {

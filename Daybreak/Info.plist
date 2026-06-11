@@ -8,6 +8,8 @@
 	</array>
 	<key>NSMotionUsageDescription</key>
 	<string>Daybreak uses motion data to count your steps for wake-up missions.</string>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>Daybreak schedules a backup system alarm so you still wake up if the app is closed or your phone is in a Focus mode.</string>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>Daybreak accesses your music library so you can pick a wake-up song.</string>
 </dict>
