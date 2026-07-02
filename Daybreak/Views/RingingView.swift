@@ -143,6 +143,12 @@ struct StepMissionView: View {
                 .font(.subheadline)
                 .foregroundStyle(Theme.textDim)
 
+            if tracker.steps == 0 && !tracker.unavailable {
+                Text("First steps can take a few seconds to register.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.textFaint)
+            }
+
             if tracker.unavailable {
                 VStack(spacing: 10) {
                     Text("Step counting isn't available — check Motion & Fitness permission in Settings.")

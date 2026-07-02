@@ -5,6 +5,7 @@ struct AlarmListView: View {
     @EnvironmentObject var store: AlarmStore
     @State private var editingAlarm: Alarm?
     @State private var showingNew = false
+    @State private var showingQuick = false
     @State private var now = Date.now
     @AppStorage("didCompleteOnboarding") private var didCompleteOnboarding = false
 
@@ -42,6 +43,14 @@ struct AlarmListView: View {
             }
             .navigationTitle("Daybreak")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showingQuick = true } label: {
+                        Image(systemName: "timer")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(Theme.dawnAmber)
+                    }
+                    .accessibilityLabel("Quick alarm")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showingNew = true } label: {
                         Image(systemName: "plus")
@@ -56,6 +65,11 @@ struct AlarmListView: View {
             }
             .sheet(isPresented: $showingNew) {
                 AlarmEditorView(alarm: Alarm())
+            }
+            .sheet(isPresented: $showingQuick) {
+                QuickAlarmView()
+                    .presentationDetents([.medium])
+                    .presentationBackground(Theme.ink)
             }
             .sheet(isPresented: Binding(
                 get: { !didCompleteOnboarding },

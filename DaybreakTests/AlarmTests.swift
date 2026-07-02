@@ -140,6 +140,28 @@ struct AlarmTests {
         #expect(last == date(2026, 6, 10, 7, 0))
     }
 
+    // MARK: - Quick alarm
+
+    @Test func quickAlarmCountsFromNextWholeMinute() {
+        // Mid-minute presses round up so the alarm is never early.
+        let pressed = date(2026, 6, 10, 7, 30, 45)
+        let fire = QuickAlarmView.fireDate(adding: 1, from: pressed, calendar: cal)
+        #expect(fire == date(2026, 6, 10, 7, 32))
+    }
+
+    @Test func quickAlarmStacksToSixtySixMinutes() {
+        // +1 hour, +5, +1 from an exact minute boundary → 66 minutes out.
+        let pressed = date(2026, 6, 10, 7, 30)
+        let fire = QuickAlarmView.fireDate(adding: 60 + 5 + 1, from: pressed, calendar: cal)
+        #expect(fire == date(2026, 6, 10, 8, 36))
+    }
+
+    @Test func quickAlarmCrossesMidnight() {
+        let pressed = date(2026, 6, 10, 23, 30, 10)
+        let fire = QuickAlarmView.fireDate(adding: 60, from: pressed, calendar: cal)
+        #expect(fire == date(2026, 6, 11, 0, 31))
+    }
+
     // MARK: - Persistence & migration
 
     @Test func legacyJSONWithoutToneDecodesAsClassic() throws {
