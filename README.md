@@ -8,7 +8,7 @@ An alarm app that actually gets you out of bed. Daybreak rings at full volume ev
 
 | Your alarms | Setting an alarm | Waking up |
 | --- | --- | --- |
-| ![The alarm list with a sunrise countdown](Screenshots/list.png) | ![The alarm editor](Screenshots/editor.png) | ![The ringing screen with a step mission](Screenshots/ringing.png) |
+| <img width="585" height="1266" alt="list" src="https://github.com/user-attachments/assets/e96c2bb2-b908-4f41-9c5f-ddde853dbb8c" /> | <img width="585" height="1266" alt="editor" src="https://github.com/user-attachments/assets/81f0d916-2876-4ce2-8720-f054583d41bf" /> | <img width="585" height="1266" alt="ringing" src="https://github.com/user-attachments/assets/658623a4-df41-4480-85dd-e3f67850a542" /> |
 
 ## Features
 
@@ -38,7 +38,8 @@ An alarm app that actually gets you out of bed. Daybreak rings at full volume ev
 1. Tap the **timer** button in the top-left.
 2. Tap the **+** buttons to build up the time — for example, **+1 hour**, **+5 min**, and **+1 min** sets an alarm for 1 hour and 6 minutes from now.
 3. The exact ring time is shown as you go. Tap **Set alarm**.
-![The quick alarm view](Screenshots/nap.png)
+<img width="585" height="1266" alt="nap" src="https://github.com/user-attachments/assets/f38b82a3-def9-4d09-ba43-3d8292d57e9b" />
+
 
 ### Turning alarms on and off
 
