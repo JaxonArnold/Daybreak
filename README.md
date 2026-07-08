@@ -64,17 +64,5 @@ Daybreak asks for a few permissions the first time you use the features that nee
 
 You can grant or change these any time in the Settings app under Daybreak.
 
-## Adding screenshots
 
-The Screenshots section above points at image files in the `Screenshots/` folder. To add your own:
-
-1. **Capture the screens.**
-   - **On a real iPhone:** open Daybreak, then press the **Side button + Volume Up** together. Screenshots save to the Photos app; AirDrop or sync them to your Mac.
-   - **In the iOS Simulator:** with the app running, press **⌘S** (or menu **File → Save Screen**). The image saves to your Desktop.
-2. **Name the files** to match what the README expects and drop them in the `Screenshots/` folder:
-   - `Screenshots/list.png` — the alarm list / home screen
-   - `Screenshots/editor.png` — creating or editing an alarm
-   - `Screenshots/ringing.png` — the wake-up screen
-3. That's it — the images will show up in this README automatically. (If you use different names or add more, update the image links in the Screenshots section: the format is `![description](Screenshots/your-file.png)`.)
-
-_Tip: keep the images a consistent size so the table lines up neatly. A single phone screenshot per column works well._
+MIT Liscense
