@@ -65,4 +65,4 @@ Daybreak asks for a few permissions the first time you use the features that nee
 You can grant or change these any time in the Settings app under Daybreak.
 
 
-MIT Liscense
+MIT License
