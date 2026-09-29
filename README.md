@@ -1,5 +1,7 @@
 # Daybreak
 
+Download here: https://apps.apple.com/us/app/daybreak-loud-alarm/id6789386803 Daybreak - Loud Alarm
+
 An alarm app that actually gets you out of bed. Daybreak rings at full volume even when your phone is on silent or in a Focus mode, wakes you with a song from your own music library, and, if you want, won't stop until you've walked a few steps or solved some math. No more sleeping through a muted alarm or swiping it off half-asleep.
 
 ## Screenshots
