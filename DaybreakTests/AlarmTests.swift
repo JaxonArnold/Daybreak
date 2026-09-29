@@ -162,6 +162,67 @@ struct AlarmTests {
         #expect(fire == date(2026, 6, 11, 0, 31))
     }
 
+    func quickAlarm(firing fire: Date) -> Alarm {
+        var a = Alarm()
+        a.hour = cal.component(.hour, from: fire)
+        a.minute = cal.component(.minute, from: fire)
+        a.quickFireDate = fire
+        return a
+    }
+
+    @Test func quickAlarmRingsOnceAtItsExactTime() {
+        let fire = date(2026, 6, 10, 15, 47)
+        let quick = quickAlarm(firing: fire)
+        #expect(quick.nextFireDate(after: date(2026, 6, 10, 15, 0), calendar: cal) == fire)
+        // Once it's gone off it's done — no rolling over to tomorrow.
+        #expect(quick.nextFireDate(after: date(2026, 6, 10, 15, 48), calendar: cal) == nil)
+    }
+
+    @Test func quickAlarmLastFireIsItsFireTime() {
+        let fire = date(2026, 6, 10, 15, 47)
+        let quick = quickAlarm(firing: fire)
+        #expect(quick.lastFireDate(before: date(2026, 6, 10, 15, 50), calendar: cal) == fire)
+        #expect(quick.lastFireDate(before: date(2026, 6, 10, 15, 40), calendar: cal) == nil)
+    }
+
+    @Test func quickAlarmKeepsItsFireDateThroughSaving() throws {
+        let quick = quickAlarm(firing: date(2026, 6, 10, 15, 47))
+        let decoded = try JSONDecoder().decode(Alarm.self, from: JSONEncoder().encode(quick))
+        #expect(decoded == quick)
+        #expect(decoded.isQuick)
+    }
+
+    // MARK: - Wake-up check
+
+    @Test func missedWakeCheckRingsAtTheExactDeadlineOnce() {
+        let deadline = date(2026, 6, 10, 7, 6, 30)
+        let check = WakeCheck(alarm: alarm(7, 0, repeats: Set(Weekday.allCases)),
+                              checkAt: date(2026, 6, 10, 7, 5), deadline: deadline)
+        let rering = check.rering
+        #expect(rering.nextFireDate(after: date(2026, 6, 10, 7, 5, 45), calendar: cal) == deadline)
+        // A one-off: it doesn't come back tomorrow like the daily alarm does.
+        #expect(rering.nextFireDate(after: date(2026, 6, 10, 7, 7), calendar: cal) == nil)
+        #expect(rering.id == check.alarm.id)
+    }
+
+    // MARK: - Snooze occurrences
+
+    // A snooze's ring counts against the snooze limit of the occurrence it
+    // came from. That relies on the stored alarm still reporting the
+    // original fire time while snoozes play out.
+
+    @Test func snoozedRingsBelongToTheOriginalOccurrence() {
+        let daily = alarm(7, 0, repeats: Set(Weekday.allCases))
+        #expect(daily.lastFireDate(before: date(2026, 6, 10, 7, 5), calendar: cal) == date(2026, 6, 10, 7, 0))
+        #expect(daily.lastFireDate(before: date(2026, 6, 10, 7, 15), calendar: cal) == date(2026, 6, 10, 7, 0))
+    }
+
+    @Test func snoozesPastMidnightBelongToTheOriginalOccurrence() {
+        // Monday-only alarm at 23:58, snoozed into Tuesday. Jun 8 2026 is a Monday.
+        let monday = alarm(23, 58, repeats: [.monday])
+        #expect(monday.lastFireDate(before: date(2026, 6, 9, 0, 13), calendar: cal) == date(2026, 6, 8, 23, 58))
+    }
+
     // MARK: - Persistence & migration
 
     @Test func legacyJSONWithoutToneDecodesAsClassic() throws {
@@ -180,6 +241,8 @@ struct AlarmTests {
         #expect(decoded.mission == .steps(count: 40))
         #expect(decoded.repeatDays == [.monday, .tuesday])
         #expect(decoded.song == nil)
+        #expect(decoded.quickFireDate == nil)
+        #expect(decoded.wakeUpCheck == false)
     }
 
     @Test func alarmRoundTripsThroughCodable() throws {
@@ -193,6 +256,19 @@ struct AlarmTests {
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(Alarm.self, from: data)
         #expect(decoded == original)
+    }
+
+    @Test func everyMissionSurvivesSaving() throws {
+        let photo = PhotoReference(thumbnail: Data([0xFF, 0xD8, 0xFF]), featurePrint: Data([1, 2, 3, 4]))
+        let missions: [Mission] = [.none, .steps(count: 40), .math(problems: 5),
+                                   .shake(count: 60), .scan(code: "0123456789012"),
+                                   .memory(rounds: 4), .typing(phrases: 3), .photo(reference: photo)]
+        for mission in missions {
+            var original = alarm(7, 0)
+            original.mission = mission
+            let decoded = try JSONDecoder().decode(Alarm.self, from: JSONEncoder().encode(original))
+            #expect(decoded.mission == mission)
+        }
     }
 
     // MARK: - Display helpers

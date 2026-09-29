@@ -13,19 +13,35 @@ struct AlarmEditorView: View {
     @State private var missionKind: MissionKind
     @State private var stepCount: Double
     @State private var mathCount: Double
+    @State private var shakeCount: Double
+    @State private var memoryRounds: Double
+    @State private var typingPhrases: Double
+    @State private var scanCode: String?
+    @State private var photoReference: PhotoReference?
+    @State private var showingCodeScanner = false
+    @State private var showingPhotoCamera = false
+    @State private var processingPhoto = false
+    @State private var photoFailed = false
+    @State private var cameraDenied = false
     @State private var motionStatus = CMPedometer.authorizationStatus()
     // Must outlive the permission request — CoreMotion cancels the callback
     // if the pedometer is deallocated while the dialog is up.
     @State private var pedometer = CMPedometer()
 
     enum MissionKind: String, CaseIterable, Identifiable {
-        case none = "None", steps = "Steps", math = "Math"
+        case none = "None", steps = "Steps", math = "Math", shake = "Shake"
+        case scan = "Scan", memory = "Memory", typing = "Typing", photo = "Photo"
         var id: String { rawValue }
         var icon: String {
             switch self {
-            case .none:  return "hand.tap"
-            case .steps: return "figure.walk"
-            case .math:  return "x.squareroot"
+            case .none:   return "hand.tap"
+            case .steps:  return "figure.walk"
+            case .math:   return "x.squareroot"
+            case .shake:  return "hand.wave"
+            case .scan:   return "qrcode.viewfinder"
+            case .memory: return "square.grid.3x3"
+            case .typing: return "keyboard"
+            case .photo:  return "camera.viewfinder"
             }
         }
     }
@@ -34,16 +50,36 @@ struct AlarmEditorView: View {
         _alarm = State(initialValue: alarm)
         var comps = DateComponents(); comps.hour = alarm.hour; comps.minute = alarm.minute
         _time = State(initialValue: Calendar.current.date(from: comps) ?? .now)
+        var kind = MissionKind.none
+        var steps = 30.0, math = 3.0, shakes = 50.0, rounds = 3.0, phrases = 2.0
+        var code: String?
+        var photo: PhotoReference?
         switch alarm.mission {
-        case .none:
-            _missionKind = State(initialValue: .none)
-            _stepCount = State(initialValue: 30); _mathCount = State(initialValue: 3)
-        case .steps(let n):
-            _missionKind = State(initialValue: .steps)
-            _stepCount = State(initialValue: Double(n)); _mathCount = State(initialValue: 3)
-        case .math(let n):
-            _missionKind = State(initialValue: .math)
-            _stepCount = State(initialValue: 30); _mathCount = State(initialValue: Double(n))
+        case .none:                 break
+        case .steps(let n):         kind = .steps; steps = Double(n)
+        case .math(let n):          kind = .math; math = Double(n)
+        case .shake(let n):         kind = .shake; shakes = Double(n)
+        case .scan(let saved):      kind = .scan; code = saved
+        case .memory(let n):        kind = .memory; rounds = Double(n)
+        case .typing(let n):        kind = .typing; phrases = Double(n)
+        case .photo(let saved):     kind = .photo; photo = saved
+        }
+        _missionKind = State(initialValue: kind)
+        _stepCount = State(initialValue: steps)
+        _mathCount = State(initialValue: math)
+        _shakeCount = State(initialValue: shakes)
+        _memoryRounds = State(initialValue: rounds)
+        _typingPhrases = State(initialValue: phrases)
+        _scanCode = State(initialValue: code)
+        _photoReference = State(initialValue: photo)
+    }
+
+    /// The scan and photo missions need something registered before saving.
+    private var canSave: Bool {
+        switch missionKind {
+        case .scan:  return scanCode != nil
+        case .photo: return photoReference != nil
+        default:     return true
         }
     }
 
@@ -72,7 +108,19 @@ struct AlarmEditorView: View {
                     Button("Save") { save() }
                         .fontWeight(.semibold)
                         .foregroundStyle(Theme.dawnAmber)
+                        .disabled(!canSave)
+                        .opacity(canSave ? 1 : 0.4)
                 }
+            }
+            .sheet(isPresented: $showingCodeScanner) {
+                RegisterCodeView { scanCode = $0 }
+            }
+            .fullScreenCover(isPresented: $showingPhotoCamera) {
+                CameraPicker { image in
+                    showingPhotoCamera = false
+                    if let image { registerPhoto(image) }
+                }
+                .ignoresSafeArea()
             }
             .sheet(isPresented: $showingSongPicker) {
                 MusicPicker { item in
@@ -205,15 +253,19 @@ struct AlarmEditorView: View {
                 .font(.footnote)
                 .foregroundStyle(Theme.textDim)
 
-            HStack(spacing: 10) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
                 ForEach(MissionKind.allCases) { kind in
                     let selected = missionKind == kind
-                    let locked = kind == .steps && !stepsUsable
+                    let locked = (kind == .steps && !stepsUsable)
+                        || (kind == .scan && !CodeScanner.isSupported)
+                        || (kind == .photo && !CameraPicker.isAvailable)
                     Button {
-                        if locked { requestMotionAccess() } else { missionKind = kind }
+                        if !locked { missionKind = kind }
+                        else if kind == .steps { requestMotionAccess() }
                     } label: {
                         VStack(spacing: 6) {
                             Image(systemName: locked ? "lock.fill" : kind.icon).font(.title3)
+                                .frame(height: 26)   // symbols differ in height; keep tiles even
                             Text(kind.rawValue).font(.footnote.weight(.medium))
                         }
                         .frame(maxWidth: .infinity)
@@ -248,16 +300,152 @@ struct AlarmEditorView: View {
                 }
             }
 
-            if missionKind == .steps {
+            if !CodeScanner.isSupported || !CameraPicker.isAvailable {
+                Text(CameraPicker.isAvailable ? "This device can't scan codes."
+                     : "This device's camera isn't available for Scan or Photo.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.textFaint)
+            }
+
+            switch missionKind {
+            case .steps:
                 stepperRow(value: $stepCount, range: 10...200, step: 10,
                            label: "\(Int(stepCount)) steps to dismiss")
-            } else if missionKind == .math {
+            case .math:
                 stepperRow(value: $mathCount, range: 1...10, step: 1,
                            label: "\(Int(mathCount)) problem\(Int(mathCount) == 1 ? "" : "s") to dismiss")
+            case .shake:
+                stepperRow(value: $shakeCount, range: 20...150, step: 10,
+                           label: "\(Int(shakeCount)) shakes to dismiss")
+            case .scan:
+                scanSetup
+            case .memory:
+                stepperRow(value: $memoryRounds, range: 1...6, step: 1,
+                           label: "\(Int(memoryRounds)) round\(Int(memoryRounds) == 1 ? "" : "s") · patterns of \(MemoryRound.length(forRound: 1)) to \(MemoryRound.length(forRound: Int(memoryRounds))) tiles")
+            case .typing:
+                stepperRow(value: $typingPhrases, range: 1...5, step: 1,
+                           label: "\(Int(typingPhrases)) phrase\(Int(typingPhrases) == 1 ? "" : "s") to retype")
+            case .photo:
+                photoSetup
+            case .none:
+                EmptyView()
             }
         }
         .padding(20)
         .card()
+    }
+
+    private var scanSetup: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let scanCode {
+                Label("Code registered", systemImage: "checkmark.circle.fill")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white)
+                Text(scanCode)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Theme.textFaint)
+                    .lineLimit(1)
+            }
+            Text(scanCode == nil
+                 ? "Scan a QR code or barcode on something away from your bed — toothpaste, a coffee bag, a label on the bathroom mirror. You'll scan it again to stop the alarm."
+                 : "Keep it somewhere you have to get up to reach.")
+                .font(.footnote)
+                .foregroundStyle(Theme.textDim)
+            Button(scanCode == nil ? "Scan a code" : "Scan a different code") { registerCode() }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Theme.dawnAmber)
+            if cameraDenied {
+                Button("Camera access is off — open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+                .font(.footnote)
+                .foregroundStyle(Theme.dawnCoral)
+            }
+        }
+    }
+
+    private var photoSetup: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let photoReference, let thumbnail = UIImage(data: photoReference.thumbnail) {
+                HStack(spacing: 12) {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 72, height: 72)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("Spot registered", systemImage: "checkmark.circle.fill")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.white)
+                        Text("Keep it somewhere you have to get up to reach.")
+                            .font(.footnote)
+                            .foregroundStyle(Theme.textDim)
+                    }
+                }
+            } else {
+                Text("Take a photo of a spot away from your bed — the bathroom sink, the coffee maker. You'll photograph it again, from about the same place, to stop the alarm.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.textDim)
+            }
+            if processingPhoto {
+                ProgressView().tint(Theme.dawnAmber)
+            } else {
+                Button(photoReference == nil ? "Take a photo" : "Take a different photo") { takePhoto() }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Theme.dawnAmber)
+            }
+            if photoFailed {
+                Text("Couldn't process that photo. Try again.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.dawnCoral)
+            }
+            if cameraDenied {
+                Button("Camera access is off — open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+                .font(.footnote)
+                .foregroundStyle(Theme.dawnCoral)
+            }
+        }
+    }
+
+    private func takePhoto() {
+        Task {
+            if await CameraAccess.request() {
+                cameraDenied = false
+                showingPhotoCamera = true
+            } else {
+                cameraDenied = true
+            }
+        }
+    }
+
+    private func registerPhoto(_ image: UIImage) {
+        processingPhoto = true
+        photoFailed = false
+        Task {
+            if let reference = await PhotoMatcher.makeReference(from: image) {
+                photoReference = reference
+            } else {
+                photoFailed = true
+            }
+            processingPhoto = false
+        }
+    }
+
+    private func registerCode() {
+        Task {
+            if await CameraAccess.request() {
+                cameraDenied = false
+                showingCodeScanner = true
+            } else {
+                cameraDenied = true
+            }
+        }
     }
 
     private var optionsSection: some View {
@@ -275,6 +463,18 @@ struct AlarmEditorView: View {
                     Stepper("", value: $alarm.maxSnoozes, in: 1...5).labelsHidden()
                 }
                 .padding(.top, 4)
+            }
+            // Quick alarms are naps — they delete themselves once stopped.
+            if !alarm.isQuick {
+                Divider().overlay(Theme.inkBorder)
+                optionToggle("Wake-up check", icon: "checkmark.seal", isOn: $alarm.wakeUpCheck)
+                if alarm.wakeUpCheck {
+                    Text("\(Int(AlarmStore.wakeCheckDelay / 60)) minutes after you stop the alarm, you'll be asked if you're still up. No answer within \(Int(AlarmStore.wakeCheckWindow)) seconds and it rings again.")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.textDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 2)
+                }
             }
         }
         .padding(20)
@@ -342,10 +542,57 @@ struct AlarmEditorView: View {
         case .none:  alarm.mission = .none
         case .steps: alarm.mission = .steps(count: Int(stepCount))
         case .math:  alarm.mission = .math(problems: Int(mathCount))
+        case .shake: alarm.mission = .shake(count: Int(shakeCount))
+        case .scan:  alarm.mission = scanCode.map { .scan(code: $0) } ?? .none
+        case .memory: alarm.mission = .memory(rounds: Int(memoryRounds))
+        case .typing: alarm.mission = .typing(phrases: Int(typingPhrases))
+        case .photo: alarm.mission = photoReference.map { .photo(reference: $0) } ?? .none
         }
         alarm.isEnabled = true
+        // A quick alarm keeps deleting itself after it rings, at the edited
+        // time — unless it's been given repeat days, making it a regular one.
+        if alarm.isQuick {
+            alarm.quickFireDate = nil
+            if alarm.repeatDays.isEmpty { alarm.quickFireDate = alarm.nextFireDate() }
+        }
         store.upsert(alarm)
         dismiss()
+    }
+}
+
+/// Full-screen scanner for registering the scan mission's code — the first
+/// code it sees is the one.
+struct RegisterCodeView: View {
+    var onPick: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var picked = false
+
+    var body: some View {
+        NavigationStack {
+            CodeScanner { code in
+                guard !picked else { return }
+                picked = true
+                onPick(code)
+                dismiss()
+            }
+            .ignoresSafeArea()
+            .overlay(alignment: .bottom) {
+                Text("Point at a QR code or barcode")
+                    .font(.subheadline.weight(.medium))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.bottom, 40)
+            }
+            .navigationTitle("Register a code")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .sensoryFeedback(.success, trigger: picked)
     }
 }
 

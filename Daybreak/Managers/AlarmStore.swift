@@ -28,6 +28,8 @@ final class AlarmStore: ObservableObject {
     private init() {
         load()
         loadDismissedRing()
+        pendingWakeCheck = UserDefaults.standard.data(forKey: Self.wakeCheckKey)
+            .flatMap { try? JSONDecoder().decode(WakeCheck.self, from: $0) }
     }
 
     // MARK: - CRUD
@@ -45,6 +47,7 @@ final class AlarmStore: ObservableObject {
     func delete(_ alarm: Alarm) {
         alarms.removeAll { $0.id == alarm.id }
         if snoozeOneShot?.0.id == alarm.id { snoozeOneShot = nil }
+        if pendingWakeCheck?.alarm.id == alarm.id { endWakeCheck() }
         cancelNotifications(for: alarm)
         FailsafeAlarm.cancel(alarm.id)
     }
@@ -53,6 +56,7 @@ final class AlarmStore: ObservableObject {
         guard let i = alarms.firstIndex(where: { $0.id == alarm.id }) else { return }
         alarms[i].isEnabled = enabled
         if !enabled, snoozeOneShot?.0.id == alarm.id { snoozeOneShot = nil }
+        if !enabled, pendingWakeCheck?.alarm.id == alarm.id { endWakeCheck() }
         queueReschedule(alarms[i])
     }
 
@@ -98,7 +102,16 @@ final class AlarmStore: ObservableObject {
 
     /// Reschedule everything (call on app launch / after an alarm finishes, so repeating alarms line up their next occurrence).
     func rescheduleAll() {
-        for alarm in alarms { queueReschedule(alarm) }
+        for alarm in alarms { queueReschedule(pendingOneShot(for: alarm.id) ?? alarm) }
+    }
+
+    /// A snooze or wake-check re-ring waiting on this alarm. It's scheduled
+    /// in the alarm's place — they share notification and backup-alarm IDs,
+    /// so scheduling the regular next occurrence would wipe it out.
+    private func pendingOneShot(for id: UUID) -> Alarm? {
+        if let (snoozed, fire) = snoozeOneShot, snoozed.id == id, fire > .now { return snoozed }
+        if let check = pendingWakeCheck, check.alarm.id == id, check.deadline > .now { return check.rering }
+        return nil
     }
 
     /// Reschedules are queued per alarm so a rapid edit/toggle can't
@@ -138,7 +151,23 @@ final class AlarmStore: ObservableObject {
     /// If an enabled alarm fired within the ring window, take over the screen.
     func checkForRingingAlarm() {
         guard ringingAlarm == nil else { return }
+        // The app was closed mid-ring (force-quit, crash): pick up where it
+        // left off, mission and all.
+        if let interrupted = interruptedRing() {
+            startRinging(interrupted)
+            return
+        }
         let now = Date.now
+        // A missed wake-up check rings again — unless it's long past, in
+        // which case they're clearly up now: wrap it up.
+        if let check = pendingWakeCheck, check.deadline <= now {
+            if now.timeIntervalSince(check.deadline) < Self.ringWindow {
+                startRinging(check.alarm)
+                return
+            }
+            endWakeCheck()
+            finishOccurrence(of: check.alarm)
+        }
         for alarm in alarms where alarm.isEnabled {
             guard let last = lastFireDate(of: alarm, before: now) else { continue }
             if let dismissed = dismissedRing, dismissed.id == alarm.id, dismissed.fire == last {
@@ -149,44 +178,180 @@ final class AlarmStore: ObservableObject {
                 return
             }
         }
+        // Nothing is ringing — clear anything an interrupted ring left
+        // behind (its rescue notifications and backup alarm).
+        stopHeartbeat()
+        removeSpentQuickAlarms()
     }
 
     func startRinging(_ alarm: Alarm) {
-        snoozeCountThisRing = 0
+        // Snoozes count per occurrence, so a snooze's ring — or a ring
+        // resumed after a force-quit — carries on the count.
+        if let ledger = snoozeLedger, ledger.alarmID == alarm.id,
+           ledger.occurrence == occurrence(of: alarm) {
+            snoozeCountThisRing = ledger.used
+        } else {
+            snoozeCountThisRing = 0
+        }
         ringingAlarm = alarm
+        // Ringing again because a wake-up check was missed: that check is over.
+        if pendingWakeCheck?.alarm.id == alarm.id { endWakeCheck() }
+        // The app is ringing out loud, so this occurrence's notification
+        // chain and backup alarm aren't needed — the heartbeat keeps a
+        // rescue armed instead, in case the app is closed mid-ring.
+        // Dismissing re-arms the next occurrence via rescheduleAll.
         cancelNotifications(for: alarm)
-        // The app is ringing out loud — the system failsafe isn't needed
-        // for this occurrence. Dismissing re-arms it via rescheduleAll.
         FailsafeAlarm.cancel(alarm.id)
         AudioEngine.shared.startAlarm(song: alarm.song, tone: alarm.tone, ramp: alarm.volumeRamp)
         if alarm.vibrate { HapticEngine.shared.start() }
+        startHeartbeat(for: alarm)
+    }
+
+    // MARK: - Ringing heartbeat (closing the app doesn't stop the alarm)
+    //
+    // While ringing, the app itself makes the noise — so if it's force-quit,
+    // nothing else would. A heartbeat every `chainSpacing` seconds:
+    //  - keeps a loud notification chain and an AlarmKit alarm scheduled
+    //    `rescueLead` seconds ahead, pushing both back each beat. App alive
+    //    → they never fire. App closed → loud notifications every 10 s plus
+    //    a system alarm that breaks through silent mode and Focus.
+    //  - posts the silent "tap to open" lock-screen breadcrumb while the app
+    //    is in the background. Posted live rather than pre-scheduled, so they
+    //    stop with the app instead of doubling up with the loud chain.
+    //  - records that we're still ringing, so reopening the app after a
+    //    force-quit goes straight back to the ringing screen.
+
+    /// How far ahead of now the rescue is kept while ringing.
+    static let rescueLead: TimeInterval = 30
+
+    private static let rescueNowID = "daybreak-rescue-now"
+    private static let ringingAlarmKey = "ringingAlarm"
+    private static let ringingHeartbeatKey = "ringingHeartbeat"
+
+    private var heartbeatTimer: Timer?
+    private var breadcrumbCount = 0
+    /// Rescue scheduling runs as a chain of tasks so a push-back can never
+    /// land after a cancel — that would fire a stray alarm after dismissal.
+    private var rescueTask: Task<Void, Never>?
+
+    private static func rescueID(_ i: Int) -> String { "daybreak-rescue-\(i)" }
+
+    private var rescueIDs: [String] {
+        [Self.rescueNowID] + (0..<chainLength).map(Self.rescueID)
+    }
+
+    private func startHeartbeat(for alarm: Alarm) {
+        heartbeatTimer?.invalidate()
+        breadcrumbCount = 0
+        if let data = try? JSONEncoder().encode(alarm) {
+            UserDefaults.standard.set(data, forKey: Self.ringingAlarmKey)
+        }
+        // Resuming after a force-quit: clear the rescue notifications that
+        // got us here.
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: rescueIDs)
+        beat(alarm)
+        let timer = Timer(timeInterval: Self.chainSpacing, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                if let alarm = self.ringingAlarm { self.beat(alarm) }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        heartbeatTimer = timer
+    }
+
+    private func beat(_ alarm: Alarm) {
+        UserDefaults.standard.set(Date.now.timeIntervalSince1970, forKey: Self.ringingHeartbeatKey)
+        let previous = rescueTask
+        rescueTask = Task {
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            await scheduleRescue(for: alarm)
+        }
         if UIApplication.shared.applicationState != .active {
-            Task { await postRingingNotifications(for: alarm) }
+            postBreadcrumb(for: alarm)
         }
     }
 
-    /// Lock-screen breadcrumbs while the alarm audio plays in the background:
-    /// silent notifications (the song is already loud) that take the user
-    /// straight into the app — instead of a Now Playing card whose pause
-    /// button would let them silence the alarm without doing the mission.
-    private func postRingingNotifications(for alarm: Alarm) async {
+    /// Stops the heartbeat and removes the rescue. Safe to call when idle.
+    private func stopHeartbeat() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+        UserDefaults.standard.removeObject(forKey: Self.ringingAlarmKey)
+        UserDefaults.standard.removeObject(forKey: Self.ringingHeartbeatKey)
+        let ids = rescueIDs
+        let previous = rescueTask
+        previous?.cancel()
+        rescueTask = Task {
+            await previous?.value   // let an in-flight push-back finish first
+            let center = UNUserNotificationCenter.current()
+            center.removePendingNotificationRequests(withIdentifiers: ids)
+            center.removeDeliveredNotifications(withIdentifiers: ids)
+            FailsafeAlarm.cancel(FailsafeAlarm.rescueID)
+        }
+    }
+
+    private func scheduleRescue(for alarm: Alarm) async {
         let center = UNUserNotificationCenter.current()
+        let content = rescueContent(for: alarm)
         for i in 0..<chainLength {
-            let content = UNMutableNotificationContent()
-            content.title = "⏰ \(alarm.label)"
-            content.body = "Ringing now — tap to open Daybreak and complete your mission."
-            content.interruptionLevel = .timeSensitive
-            content.sound = nil
-            content.userInfo = ["alarmID": alarm.id.uuidString]
-            let trigger = i == 0 ? nil : UNTimeIntervalNotificationTrigger(
-                timeInterval: Double(i) * Self.chainSpacing, repeats: false)
-            let request = UNNotificationRequest(
-                identifier: "\(alarm.id.uuidString)-ringing-\(i)",
-                content: content,
-                trigger: trigger
-            )
+            guard !Task.isCancelled else { return }
+            let trigger = UNTimeIntervalNotificationTrigger(
+                timeInterval: Self.rescueLead + Double(i) * Self.chainSpacing, repeats: false)
+            // Same IDs every beat, so each add replaces the pending one.
+            let request = UNNotificationRequest(identifier: Self.rescueID(i), content: content, trigger: trigger)
             try? await center.add(request)
         }
+        guard !Task.isCancelled else { return }
+        await FailsafeAlarm.scheduleRescue(for: alarm, at: .now.addingTimeInterval(Self.rescueLead))
+    }
+
+    private func rescueContent(for alarm: Alarm) -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = "⏰ \(alarm.label)"
+        content.body = "Your alarm is still going — open Daybreak to finish your mission."
+        content.interruptionLevel = .timeSensitive
+        content.sound = notificationSound(for: alarm)
+        content.userInfo = ["alarmID": alarm.id.uuidString]
+        return content
+    }
+
+    /// The app is being closed mid-ring (swiped away): sound the first loud
+    /// notification right away instead of waiting for the rescue chain.
+    func ringingWillTerminate() {
+        guard let alarm = ringingAlarm else { return }
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(identifier: Self.rescueNowID,
+                                            content: rescueContent(for: alarm), trigger: trigger)
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    /// Lock-screen breadcrumb while the alarm plays in the background: a
+    /// silent notification (the song is already loud) that takes the user
+    /// straight into the app — instead of a Now Playing card whose pause
+    /// button would let them silence the alarm without doing the mission.
+    private func postBreadcrumb(for alarm: Alarm) {
+        let content = UNMutableNotificationContent()
+        content.title = "⏰ \(alarm.label)"
+        content.body = "Ringing now — tap to open Daybreak and complete your mission."
+        content.interruptionLevel = .timeSensitive
+        content.sound = nil
+        content.userInfo = ["alarmID": alarm.id.uuidString]
+        // IDs cycle within the set cancelNotifications(for:) cleans up.
+        let id = "\(alarm.id.uuidString)-ringing-\(breadcrumbCount % chainLength)"
+        breadcrumbCount += 1
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
+    }
+
+    /// A ring cut short by the app closing (force-quit, crash) whose last
+    /// heartbeat was within `ringWindow`, for an alarm that's still on.
+    private func interruptedRing() -> Alarm? {
+        let defaults = UserDefaults.standard
+        guard let data = defaults.data(forKey: Self.ringingAlarmKey),
+              let alarm = try? JSONDecoder().decode(Alarm.self, from: data),
+              alarms.contains(where: { $0.id == alarm.id && $0.isEnabled }) else { return nil }
+        let lastBeat = Date(timeIntervalSince1970: defaults.double(forKey: Self.ringingHeartbeatKey))
+        return Date.now.timeIntervalSince(lastBeat) < Self.ringWindow ? alarm : nil
     }
 
     // MARK: - Background ringing (the real Alarmy trick)
@@ -202,11 +367,8 @@ final class AlarmStore: ObservableObject {
 
     /// Call when the app moves to the background.
     func enterBackground() {
-        guard ringingAlarm == nil else {
-            // Already ringing out loud; force-quitting now would silence it.
-            startKillWarning()
-            return
-        }
+        // Already ringing out loud — the ringing heartbeat covers a force-quit.
+        guard ringingAlarm == nil else { return }
         armFireTimer()
         if nextBackgroundFire() != nil {
             AudioEngine.shared.startKeepAlive()
@@ -284,15 +446,22 @@ final class AlarmStore: ObservableObject {
         var candidates: [(Alarm, Date)] = []
         if let next = nextAlarm { candidates.append(next) }
         if let (alarm, fire) = snoozeOneShot, fire > .now { candidates.append((alarm, fire)) }
+        if let check = pendingWakeCheck, check.deadline > .now { candidates.append((check.alarm, check.deadline)) }
         return candidates.min { $0.1 < $1.1 }.map { (alarm: $0.0, date: $0.1) }
     }
 
     func snooze() {
-        guard let alarm = ringingAlarm else { return }
+        guard let alarm = ringingAlarm,
+              alarm.snoozeEnabled, snoozeCountThisRing < alarm.maxSnoozes else { return }
         snoozeCountThisRing += 1
+        if let occurrence = occurrence(of: alarm) {
+            snoozeLedger = SnoozeLedger(alarmID: alarm.id, occurrence: occurrence,
+                                        used: snoozeCountThisRing)
+        }
         AudioEngine.shared.stop()
         HapticEngine.shared.stop()
         ringingAlarm = nil
+        stopHeartbeat()
 
         // One-shot snooze chain.
         let fire = Date.now.addingTimeInterval(Double(alarm.snoozeMinutes) * 60)
@@ -300,6 +469,7 @@ final class AlarmStore: ObservableObject {
         snoozed.repeatDays = []
         snoozed.hour = Calendar.current.component(.hour, from: fire)
         snoozed.minute = Calendar.current.component(.minute, from: fire)
+        if snoozed.isQuick { snoozed.quickFireDate = fire }
         snoozeOneShot = (snoozed, fire)
         queueReschedule(snoozed)
     }
@@ -307,26 +477,133 @@ final class AlarmStore: ObservableObject {
     /// Tracks an in-flight snooze so checkForRingingAlarm can find it.
     private var snoozeOneShot: (Alarm, Date)?
 
+    /// Snoozes used on one occurrence of an alarm (its id + scheduled time).
+    /// Tied to the occurrence rather than reset on every ring, so a snooze's
+    /// ring continues the count — and persisted, so closing the app can't
+    /// reset the limit.
+    private struct SnoozeLedger: Codable {
+        var alarmID: UUID
+        var occurrence: Date
+        var used: Int
+    }
+
+    private static let snoozeLedgerKey = "snoozeLedger"
+
+    private var snoozeLedger: SnoozeLedger? {
+        get {
+            UserDefaults.standard.data(forKey: Self.snoozeLedgerKey)
+                .flatMap { try? JSONDecoder().decode(SnoozeLedger.self, from: $0) }
+        }
+        set {
+            UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: Self.snoozeLedgerKey)
+        }
+    }
+
+    /// The scheduled occurrence a ring belongs to. Uses the stored alarm: a
+    /// snoozed copy carries the snooze time, but its ring still belongs to
+    /// the original occurrence.
+    private func occurrence(of alarm: Alarm) -> Date? {
+        let stored = alarms.first { $0.id == alarm.id } ?? alarm
+        return stored.lastFireDate(before: .now)
+    }
+
     func dismissRinging() {
         AudioEngine.shared.stop()
         HapticEngine.shared.stop()
+        stopHeartbeat()
         if let alarm = ringingAlarm {
             cancelNotifications(for: alarm)
-            // Remember this ring so reopening the app while its fire time is
-            // still inside the ring window doesn't start it all over again.
-            if let fire = lastFireDate(of: alarm, before: .now) {
+            // Remember this occurrence so reopening the app inside the ring
+            // window doesn't start it all over again.
+            if let fire = occurrence(of: alarm) {
                 dismissedRing = (alarm.id, fire)
             }
-            // One-time alarms switch off after they ring; repeating ones
-            // re-arm. Check the *stored* alarm — a snoozed copy has its
-            // repeatDays stripped and must not switch off the original.
-            if let i = alarms.firstIndex(where: { $0.id == alarm.id }), alarms[i].repeatDays.isEmpty {
-                alarms[i].isEnabled = false
+            // Check the *stored* alarm — a snoozed copy has its repeatDays
+            // stripped and must not switch off the original. Quick alarms are
+            // one-and-done; with a wake-up check, the occurrence isn't over
+            // until it's answered.
+            if let stored = alarms.first(where: { $0.id == alarm.id }) {
+                if stored.isQuick {
+                    delete(stored)
+                } else if stored.wakeUpCheck {
+                    startWakeCheck(for: stored)
+                } else {
+                    finishOccurrence(of: stored)
+                }
             }
         }
         snoozeOneShot = nil
         ringingAlarm = nil
         rescheduleAll()
+    }
+
+    /// An occurrence is over: one-time alarms switch off and stay in the
+    /// list; repeating ones simply re-arm.
+    private func finishOccurrence(of alarm: Alarm) {
+        guard let i = alarms.firstIndex(where: { $0.id == alarm.id }),
+              alarms[i].repeatDays.isEmpty else { return }
+        alarms[i].isEnabled = false
+    }
+
+    // MARK: - Wake-up check
+    //
+    // `wakeCheckDelay` after an alarm with a wake-up check is stopped, a
+    // notification (and an in-app prompt, see StillAwakeView) asks "Still
+    // awake?". No answer within `wakeCheckWindow` and the alarm rings again,
+    // mission and all. The re-ring is a one-shot at the deadline, riding the
+    // same machinery as a snooze: the fire timer, notification chain, and
+    // backup alarm — so it happens even if the app has been closed.
+
+    static let wakeCheckDelay: TimeInterval = 5 * 60
+    static let wakeCheckWindow: TimeInterval = 90
+    static let wakeCheckID = "daybreak-wake-check"
+    private static let wakeCheckKey = "pendingWakeCheck"
+
+    @Published private(set) var pendingWakeCheck: WakeCheck? {
+        didSet {
+            UserDefaults.standard.set(try? JSONEncoder().encode(pendingWakeCheck), forKey: Self.wakeCheckKey)
+        }
+    }
+
+    private func startWakeCheck(for alarm: Alarm) {
+        let checkAt = Date.now.addingTimeInterval(Self.wakeCheckDelay)
+        pendingWakeCheck = WakeCheck(alarm: alarm, checkAt: checkAt,
+                                     deadline: checkAt.addingTimeInterval(Self.wakeCheckWindow))
+        let content = UNMutableNotificationContent()
+        content.title = "☀️ Still awake?"
+        content.body = "Tap within \(Int(Self.wakeCheckWindow)) seconds, or \(alarm.label) rings again."
+        content.sound = .default
+        content.interruptionLevel = .timeSensitive
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: Self.wakeCheckDelay, repeats: false)
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: Self.wakeCheckID, content: content, trigger: trigger))
+    }
+
+    /// "I'm up" — from the prompt, or by tapping the check notification.
+    func confirmWakeCheck() {
+        guard let check = pendingWakeCheck, Date.now < check.deadline else { return }
+        endWakeCheck()
+        finishOccurrence(of: check.alarm)
+        rescheduleAll()   // drops the re-ring for the next regular occurrence
+    }
+
+    private func endWakeCheck() {
+        pendingWakeCheck = nil
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [Self.wakeCheckID])
+        center.removeDeliveredNotifications(withIdentifiers: [Self.wakeCheckID])
+    }
+
+    /// Catches a quick alarm that went off but was never dismissed (the app
+    /// was closed mid-ring): it can't ring again, so tidy it away. The hour
+    /// of grace outlasts any run of snoozes.
+    private func removeSpentQuickAlarms() {
+        let cutoff = Date.now.addingTimeInterval(-60 * 60)
+        for alarm in alarms {
+            guard let fire = alarm.quickFireDate, fire < cutoff,
+                  ringingAlarm?.id != alarm.id, snoozeOneShot?.0.id != alarm.id else { continue }
+            delete(alarm)
+        }
     }
 
     /// The last ring the user dismissed (alarm id + fire time). Persisted so
@@ -368,3 +645,22 @@ final class AlarmStore: ObservableObject {
     }
 }
 
+
+/// A pending wake-up check: ask at `checkAt`, ring `alarm` again at
+/// `deadline` if nobody answers.
+struct WakeCheck: Codable, Equatable {
+    var alarm: Alarm
+    var checkAt: Date
+    var deadline: Date
+
+    /// What rings if the check is missed: the alarm as a one-shot at the
+    /// exact deadline (`quickFireDate` means "ring once, at this moment").
+    var rering: Alarm {
+        var copy = alarm
+        copy.repeatDays = []
+        copy.hour = Calendar.current.component(.hour, from: deadline)
+        copy.minute = Calendar.current.component(.minute, from: deadline)
+        copy.quickFireDate = deadline
+        return copy
+    }
+}

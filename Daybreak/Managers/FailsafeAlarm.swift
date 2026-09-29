@@ -14,15 +14,31 @@ enum FailsafeAlarm {
     /// How long the in-app alarm gets to ring (and cancel us) first.
     static let graceWindow: TimeInterval = 60
 
+    /// The rescue alarm kept armed while an alarm rings (see AlarmStore's
+    /// ringing heartbeat). Only one alarm rings at a time, so one fixed ID.
+    static let rescueID = UUID(uuidString: "6B1E2C0A-3D4F-4A5B-8C7D-9E0F1A2B3C4D")!
+
     /// Cancel and, if the alarm is enabled, re-schedule the failsafe for
     /// its next occurrence. Mirrors the notification-chain lifecycle.
     static func sync(_ alarm: Alarm) async {
         cancel(alarm.id)
         guard alarm.isEnabled, let fire = alarm.nextFireDate() else { return }
         guard await ensureAuthorized() else { return }
+        await schedule(id: alarm.id, title: "\(alarm.label) — open Daybreak",
+                       at: fire.addingTimeInterval(graceWindow))
+    }
 
+    /// Re-arm the rescue alarm for `date`, replacing the previous one.
+    /// Never prompts for permission — this runs while an alarm is ringing.
+    static func scheduleRescue(for alarm: Alarm, at date: Date) async {
+        cancel(rescueID)
+        guard AlarmManager.shared.authorizationState == .authorized else { return }
+        await schedule(id: rescueID, title: "\(alarm.label) — still ringing", at: date)
+    }
+
+    private static func schedule(id: UUID, title: LocalizedStringResource, at date: Date) async {
         let alert = AlarmPresentation.Alert(
-            title: "\(alarm.label) — open Daybreak",
+            title: title,
             stopButton: AlarmButton(text: "Stop", textColor: .white, systemImageName: "stop.circle"),
             secondaryButton: AlarmButton(text: "Open Daybreak", textColor: .white, systemImageName: "sun.horizon.fill"),
             secondaryButtonBehavior: .custom
@@ -33,11 +49,11 @@ enum FailsafeAlarm {
             tintColor: Theme.dawnAmber
         )
         let configuration = AlarmManager.AlarmConfiguration(
-            schedule: .fixed(fire.addingTimeInterval(graceWindow)),
+            schedule: .fixed(date),
             attributes: attributes,
             secondaryIntent: OpenDaybreakIntent()
         )
-        _ = try? await AlarmManager.shared.schedule(id: alarm.id, configuration: configuration)
+        _ = try? await AlarmManager.shared.schedule(id: id, configuration: configuration)
     }
 
     static func cancel(_ id: UUID) {

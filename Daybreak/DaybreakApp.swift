@@ -2,14 +2,27 @@ import SwiftUI
 import Combine
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    // Set up before launch finishes, so tapping a notification that
+    // launched the app (a "Still awake?" check, say) reaches the delegate.
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        NotificationsManager.shared.store = AlarmStore.shared
+        UNUserNotificationCenter.current().delegate = NotificationsManager.shared
+        return true
+    }
+
     // A force-quit of an app that's running in the background (our silent
     // keep-alive loop keeps us running) lands here — fire the warning right
     // away instead of waiting for the dead man's switch.
     func applicationWillTerminate(_ application: UIApplication) {
         MainActor.assumeIsolated {
             let store = AlarmStore.shared
-            guard store.alarms.contains(where: { $0.isEnabled }) else { return }
-            store.scheduleKillWarning(after: 1)
+            if store.ringingAlarm != nil {
+                // Swiped away mid-ring: the alarm keeps going.
+                store.ringingWillTerminate()
+            } else if store.alarms.contains(where: { $0.isEnabled }) {
+                store.scheduleKillWarning(after: 1)
+            }
         }
     }
 }
@@ -31,15 +44,14 @@ struct DaybreakApp: App {
                         .environmentObject(store)
                         .transition(.opacity)
                         .zIndex(1)
+                } else if let check = store.pendingWakeCheck {
+                    StillAwakeView(check: check)
+                        .environmentObject(store)
+                        .zIndex(1)
                 }
             }
             .animation(.easeInOut(duration: 0.3), value: store.ringingAlarm != nil)
             .preferredColorScheme(.dark)
-            .onAppear {
-                let center = UNUserNotificationCenter.current()
-                NotificationsManager.shared.store = store
-                center.delegate = NotificationsManager.shared
-            }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {

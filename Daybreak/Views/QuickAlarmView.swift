@@ -122,6 +122,7 @@ struct QuickAlarmView: View {
         alarm.mission = .none          // it's a nap timer, not a wake-up fight
         alarm.hour = cal.component(.hour, from: fireDate)
         alarm.minute = cal.component(.minute, from: fireDate)
+        alarm.quickFireDate = fireDate
         store.upsert(alarm)
         dismiss()
     }

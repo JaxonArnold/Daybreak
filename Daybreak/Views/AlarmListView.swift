@@ -198,16 +198,21 @@ struct AlarmRow: View {
                     Text(alarm.timeString)
                         .font(Theme.clock(36))
                         .foregroundStyle(alarm.isEnabled ? .white : Theme.textFaint)
+                    // One line: the alarm's name gives way (truncates) before
+                    // the schedule or mission wrap.
                     HStack(spacing: 6) {
                         Text(alarm.label)
                         Text("·")
                         Text(alarm.repeatString)
+                            .fixedSize()
                         if alarm.mission != .none {
                             Text("·")
-                            Label(alarm.mission.shortLabel, systemImage: "figure.walk")
+                            Label(alarm.mission.shortLabel, systemImage: alarm.mission.icon)
                                 .labelStyle(.titleAndIcon)
+                                .fixedSize()
                         }
                     }
+                    .lineLimit(1)
                     .font(.footnote)
                     .foregroundStyle(alarm.isEnabled ? Theme.textDim : Theme.textFaint)
                     if let song = alarm.song {
