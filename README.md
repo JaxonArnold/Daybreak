@@ -8,7 +8,7 @@ An alarm app that actually gets you out of bed. Daybreak rings at full volume ev
 
 | Your alarms | Setting an alarm | Waking up |
 | --- | --- | --- |
-| ![The alarm list with a sunrise countdown](Screenshots/list.png) | ![The alarm editor](Screenshots/editor.png) | ![The ringing screen with a step mission](Screenshots/ringing.png) |
+| <img width="585" height="1266" alt="list" src="https://github.com/user-attachments/assets/e96c2bb2-b908-4f41-9c5f-ddde853dbb8c" /> | <img width="585" height="1266" alt="editor" src="https://github.com/user-attachments/assets/81f0d916-2876-4ce2-8720-f054583d41bf" /> | <img width="585" height="1266" alt="ringing" src="https://github.com/user-attachments/assets/658623a4-df41-4480-85dd-e3f67850a542" /> |
 
 ## Features
 
@@ -46,7 +46,8 @@ An alarm app that actually gets you out of bed. Daybreak rings at full volume ev
 1. Tap the **timer** button in the top-left.
 2. Tap the **+** buttons to build up the time — for example, **+1 hour**, **+5 min**, and **+1 min** sets an alarm for 1 hour and 6 minutes from now.
 3. The exact ring time is shown as you go. Tap **Set alarm**.
-![The quick alarm view](Screenshots/nap.png)
+<img width="585" height="1266" alt="nap" src="https://github.com/user-attachments/assets/f38b82a3-def9-4d09-ba43-3d8292d57e9b" />
+
 
 ### Turning alarms on and off
 
@@ -78,17 +79,5 @@ Daybreak asks for a few permissions the first time you use the features that nee
 
 You can grant or change these any time in the Settings app under Daybreak.
 
-## Adding screenshots
 
-The Screenshots section above points at image files in the `Screenshots/` folder. To add your own:
-
-1. **Capture the screens.**
-   - **On a real iPhone:** open Daybreak, then press the **Side button + Volume Up** together. Screenshots save to the Photos app; AirDrop or sync them to your Mac.
-   - **In the iOS Simulator:** with the app running, press **⌘S** (or menu **File → Save Screen**). The image saves to your Desktop.
-2. **Name the files** to match what the README expects and drop them in the `Screenshots/` folder:
-   - `Screenshots/list.png` — the alarm list / home screen
-   - `Screenshots/editor.png` — creating or editing an alarm
-   - `Screenshots/ringing.png` — the wake-up screen
-3. That's it — the images will show up in this README automatically. (If you use different names or add more, update the image links in the Screenshots section: the format is `![description](Screenshots/your-file.png)`.)
-
-_Tip: keep the images a consistent size so the table lines up neatly. A single phone screenshot per column works well._
+MIT License
